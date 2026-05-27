@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools >= 64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name =  "bocphysics"
+version = "0.1"
+authors = [
+    { name="Matthew Johnson", email="mj293@cam.ac.uk" },
+]
+description = "2D rigid body physical simulation using boc"
+dependencies = [
+    "bocpy",
+    "pygame"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest"
+]
+
+[project.scripts]
+simulation = "bocphysics:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
