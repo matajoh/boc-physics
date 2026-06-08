@@ -109,8 +109,8 @@ The five replacement patterns you should know cold:
 - Tests live under `test/` (create the directory the first time you add a
   test; follow the patterns in `testing-with-boc`).
 - `bench/` — tracked headless benchmarks (e.g. `drop_box.py`), a perf and
-  convergence probe. Not pytest tests (`Matrix.uniform` is unseedable). Run
-  with `python bench/drop_box.py --shapes 80 --frames 300`.
+  convergence probe. Not pytest tests (spawn placement uses an unseeded
+  `random`). Run with `python bench/drop_box.py --shapes 80 --frames 300`.
 
 C extensions: if any are added later, they live alongside the package source
 and are picked up by `pip install -e .` — that triggers a rebuild against the

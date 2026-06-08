@@ -3,8 +3,8 @@
 Drops a variety of shapes into an open box and runs the engine without a
 window, reporting wall-clock cost per frame and two convergence proxies
 (total kinetic energy and total penetration depth). This is a perf /
-convergence probe, NOT a reproducible correctness test: it uses
-``Matrix.uniform`` which is unseedable, so numbers vary run to run.
+convergence probe, NOT a reproducible correctness test: spawn placement draws
+from an unseeded ``random``, so numbers vary run to run.
 
 Run from the repo root with the project venv active::
 

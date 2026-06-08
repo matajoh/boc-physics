@@ -1,7 +1,5 @@
 """Module providing the physics system."""
 
-from typing import List
-
 from bocpy import Matrix
 
 from .bodies import RigidBody
@@ -30,12 +28,6 @@ class Physics:
         self.restitution = restitution
         self.static_friction = static_friction
         self.dynamic_friction = dynamic_friction
-        self.contacts: List[Matrix] = [None] * 2
-        self.j_list: List[float] = [0] * 2
-        self.ra_list: List[Matrix] = [ZERO_VEC] * 2
-        self.rb_list: List[Matrix] = [ZERO_VEC] * 2
-        self.impulse_list: List[Matrix] = [ZERO_VEC] * 2
-        self.friction_impulse_list: List[Matrix] = [ZERO_VEC] * 2
 
     def resolve_collision(self, a: RigidBody, b: RigidBody, collision: Collision,
                           contact0: Matrix, contact1: Matrix):
@@ -85,22 +77,23 @@ class Physics:
     def resolve_collision_rotation(self, a: RigidBody, b: RigidBody, normal: Matrix,
                                    contact0: Matrix, contact1: Matrix):
         """Resolve a collision using impulses including rotation."""
-        self.contacts[0] = contact0
-        num_contacts = 1
+        contacts = [contact0]
         if contact1 is not None:
-            self.contacts[1] = contact1
-            num_contacts = 2
+            contacts.append(contact1)
 
+        num_contacts = len(contacts)
         e = self.restitution
 
-        for i in range(num_contacts):
-            self.impulse_list[i] = ZERO_VEC
+        # per-collision scratch is local so concurrent island solves never race
+        ra_list = [ZERO_VEC] * num_contacts
+        rb_list = [ZERO_VEC] * num_contacts
+        impulse_list = [ZERO_VEC] * num_contacts
 
         for i in range(num_contacts):
-            ra = self.contacts[i] - a.position
-            rb = self.contacts[i] - b.position
-            self.ra_list[i] = ra
-            self.rb_list[i] = rb
+            ra = contacts[i] - a.position
+            rb = contacts[i] - b.position
+            ra_list[i] = ra
+            rb_list[i] = rb
 
             ra_perp = ra.perpendicular()
             rb_perp = rb.perpendicular()
@@ -129,12 +122,12 @@ class Physics:
             j /= num_contacts
             impulse = j * normal
 
-            self.impulse_list[i] = impulse
+            impulse_list[i] = impulse
 
         for i in range(num_contacts):
-            impulse = self.impulse_list[i]
-            ra = self.ra_list[i]
-            rb = self.rb_list[i]
+            impulse = impulse_list[i]
+            ra = ra_list[i]
+            rb = rb_list[i]
             if a.physics:
                 a.linear_velocity += -impulse * a.inv_mass
                 a.angular_velocity += -ra.cross(impulse) * a.inv_inertia
@@ -146,26 +139,27 @@ class Physics:
     def resolve_collision_friction(self, a: RigidBody, b: RigidBody, normal: Matrix,
                                    contact0: Matrix, contact1: Matrix):
         """Resolve a collision using impulses including rotation and friction."""
-        self.contacts[0] = contact0
-        num_contacts = 1
+        contacts = [contact0]
         if contact1 is not None:
-            self.contacts[1] = contact1
-            num_contacts = 2
+            contacts.append(contact1)
 
+        num_contacts = len(contacts)
         e = self.restitution
         sf = self.static_friction
         df = self.dynamic_friction
 
-        for i in range(num_contacts):
-            self.impulse_list[i] = ZERO_VEC
-            self.j_list[i] = 0
-            self.friction_impulse_list[i] = ZERO_VEC
+        # per-collision scratch is local so concurrent island solves never race
+        ra_list = [ZERO_VEC] * num_contacts
+        rb_list = [ZERO_VEC] * num_contacts
+        j_list = [0] * num_contacts
+        impulse_list = [ZERO_VEC] * num_contacts
+        friction_impulse_list = [ZERO_VEC] * num_contacts
 
         for i in range(num_contacts):
-            ra = self.contacts[i] - a.position
-            rb = self.contacts[i] - b.position
-            self.ra_list[i] = ra
-            self.rb_list[i] = rb
+            ra = contacts[i] - a.position
+            rb = contacts[i] - b.position
+            ra_list[i] = ra
+            rb_list[i] = rb
 
             ra_perp = ra.perpendicular()
             rb_perp = rb.perpendicular()
@@ -192,14 +186,14 @@ class Physics:
             j = -(1 + e) * contact_velocity_mag
             j /= denom
             j /= num_contacts
-            self.j_list[i] = j
+            j_list[i] = j
             impulse = j * normal
-            self.impulse_list[i] = impulse
+            impulse_list[i] = impulse
 
         for i in range(num_contacts):
-            impulse = self.impulse_list[i]
-            ra = self.ra_list[i]
-            rb = self.rb_list[i]
+            impulse = impulse_list[i]
+            ra = ra_list[i]
+            rb = rb_list[i]
             if a.physics:
                 a.linear_velocity += -impulse * a.inv_mass
                 a.angular_velocity += -ra.cross(impulse) * a.inv_inertia
@@ -209,9 +203,9 @@ class Physics:
                 b.angular_velocity += rb.cross(impulse) * b.inv_inertia
 
         for i in range(num_contacts):
-            ra = self.ra_list[i]
-            rb = self.rb_list[i]
-            j = self.j_list[i]
+            ra = ra_list[i]
+            rb = rb_list[i]
+            j = j_list[i]
 
             ra_perp = ra.perpendicular()
             rb_perp = rb.perpendicular()
@@ -246,12 +240,12 @@ class Physics:
             else:
                 friction_impulse = -j * tangent * df
 
-            self.friction_impulse_list[i] = friction_impulse
+            friction_impulse_list[i] = friction_impulse
 
         for i in range(num_contacts):
-            friction_impulse = self.friction_impulse_list[i]
-            ra = self.ra_list[i]
-            rb = self.rb_list[i]
+            friction_impulse = friction_impulse_list[i]
+            ra = ra_list[i]
+            rb = rb_list[i]
             if a.physics:
                 a.linear_velocity += -friction_impulse * a.inv_mass
                 a.angular_velocity += -ra.cross(friction_impulse) * a.inv_inertia

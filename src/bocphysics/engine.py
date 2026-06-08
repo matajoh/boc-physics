@@ -48,11 +48,18 @@ class PhysicsEngine:
         detection_kind (DetectionKind): The collision detection algorithm to use
         show_contacts (bool): Whether to display contact points
         height_in_meters (float): The height of the simulation window in meters
+        substep_solver (bool): Whether to use the substep solver that separates
+                               sub-steps from velocity iterations
+        num_substeps (int): Sub-steps per frame for the substep solver
+        num_velocity_iterations (int): Velocity iterations per sub-step for the
+                                       substep solver
     """
 
     def __init__(self, width: float, height: float,
                  mode: PhysicsMode, detection_kind: DetectionKind,
-                 show_contacts: bool, height_in_meters=30):
+                 show_contacts: bool, height_in_meters=30,
+                 substep_solver=True, num_substeps=4,
+                 num_velocity_iterations=5):
         """Create the engine from the window size, physics mode, and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
@@ -70,6 +77,10 @@ class PhysicsEngine:
         self.contacts: Set[Tuple[float, float]] = set()
         self.show_contacts = show_contacts
         self.mode = mode
+        # the substep solver splits sub-steps from velocity iterations
+        self.substep_solver = substep_solver
+        self.num_substeps = num_substeps
+        self.num_velocity_iterations = num_velocity_iterations
         # the swept AABB pads each body's box to absorb a frame's motion
         self.swept_slop = 0.25
         # the systems are defined by which components they operate over
@@ -156,6 +167,27 @@ class PhysicsEngine:
 
         return list(islands.values())
 
+    def build_manifold(self, a: RigidBody, b: RigidBody):
+        """Run the narrow phase for one pair, returning its contact manifold.
+
+        Description:
+            Confirms the exact collision and generates contact points, the
+            geometry-only half of the narrow phase. Returns None for a false
+            positive, otherwise the tuple the impulse solver iterates over.
+        """
+        collision = detect_collision(a, b)
+        if collision is None:
+            # false positive
+            return None
+
+        c0, c1 = find_contact_points(a, b, collision)
+        if self.show_contacts:
+            self.contacts.add((c0.x, c0.y))
+            if c1 is not None:
+                self.contacts.add((c1.x, c1.y))
+
+        return (a, b, collision, c0, c1)
+
     def resolve_pair(self, a: RigidBody, b: RigidBody):
         """Detect and resolve a contact between one candidate pair of bodies.
 
@@ -164,18 +196,9 @@ class PhysicsEngine:
             collision, generates contact points, and passes them to the
             physics module for impulse resolution.
         """
-        collision = detect_collision(a, b)
-        if collision is None:
-            # false positive
-            return
-
-        c0, c1 = find_contact_points(a, b, collision)
-        if self.show_contacts:
-            self.contacts.add((c0.x, c0.y))
-            if c1 is not None:
-                self.contacts.add((c1.x, c1.y))
-
-        self.physics.resolve_collision(a, b, collision, c0, c1)
+        manifold = self.build_manifold(a, b)
+        if manifold is not None:
+            self.physics.resolve_collision(*manifold)
 
     def solve_island(self, island: Island, dt: float, num_iterations: int):
         """Advance one island over all sub-steps, integrating then resolving."""
@@ -185,6 +208,31 @@ class PhysicsEngine:
 
             for a, b in island.pairs:
                 self.resolve_pair(a, b)
+
+    def solve_island_substep(self, island: Island, sub_dt: float,
+                             num_substeps: int, num_velocity_iterations: int):
+        """Advance one island, separating sub-steps from velocity iterations.
+
+        Description:
+            Each sub-step integrates the bodies then builds every pair's
+            contact manifold once, since the geometry barely moves within a
+            sub-step. The velocity solver then iterates over those cached
+            manifolds, converging the coupled contacts without paying the
+            narrow-phase cost again.
+        """
+        for _ in range(num_substeps):
+            for body in island.bodies:
+                body.step(sub_dt, self.gravity)
+
+            manifolds = []
+            for a, b in island.pairs:
+                manifold = self.build_manifold(a, b)
+                if manifold is not None:
+                    manifolds.append(manifold)
+
+            for _ in range(num_velocity_iterations):
+                for manifold in manifolds:
+                    self.physics.resolve_collision(*manifold)
 
     def step(self, dt: float, num_iterations=20):
         """Advances the simulation by a time step.
@@ -209,9 +257,15 @@ class PhysicsEngine:
         self.broad_phase()
         islands = self.build_islands()
 
-        sub_dt = dt / num_iterations
-        for island in islands:
-            self.solve_island(island, sub_dt, num_iterations)
+        if self.substep_solver:
+            sub_dt = dt / self.num_substeps
+            for island in islands:
+                self.solve_island_substep(island, sub_dt, self.num_substeps,
+                                          self.num_velocity_iterations)
+        else:
+            sub_dt = dt / num_iterations
+            for island in islands:
+                self.solve_island(island, sub_dt, num_iterations)
 
         self.remove_outside()
 
