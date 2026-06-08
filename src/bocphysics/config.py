@@ -13,19 +13,23 @@ parses the JSON and provides default values, is a solid approach to
 emulate.
 """
 
-from enum import Enum, auto
+from enum import auto, Enum
 from typing import NamedTuple
 
 
 class Resolution(NamedTuple("Resolution", [("width", int), ("height", int)])):
     """Resolution of the simulation window."""
+
     @staticmethod
     def from_string(name: str) -> "Resolution":
+        """Parse a resolution from a "WIDTHxHEIGHT" string."""
         parts = name.split("x")
         return Resolution(int(parts[0]), int(parts[1]))
 
 
 class PhysicsMode(Enum):
+    """The collision-response model the physics system applies."""
+
     NONE = auto()
     BASIC = auto()
     ROTATION = auto()
@@ -33,6 +37,8 @@ class PhysicsMode(Enum):
 
 
 class DetectionKind(Enum):
+    """The broad-phase collision-detection algorithm to use."""
+
     BASIC = 1
     SPATIAL_HASHING = 2
     QUADTREE = 3

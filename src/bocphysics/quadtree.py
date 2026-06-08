@@ -1,6 +1,7 @@
 """This module provides an implemention of a QuadTree data structure."""
 
 from typing import List, Tuple
+
 from .bodies import AABB, RigidBody
 
 
@@ -8,6 +9,7 @@ class Node:
     """A node in the QuadTree."""
 
     def __init__(self, box: AABB):
+        """Create a leaf node spanning the given box."""
         self.box = box
         self.c0 = None
         self.c1 = None
@@ -34,6 +36,7 @@ class Node:
         self.c3 = Node(self.compute_box(3))
 
     def __getitem__(self, index: int) -> "Node":
+        """Return the child node at the given quadrant index."""
         match index:
             case 0:
                 return self.c0
@@ -47,6 +50,7 @@ class Node:
                 raise IndexError("Invalid child index")
 
     def __len__(self) -> int:
+        """Return the fixed number of child quadrants (four)."""
         return 4
 
     @property
@@ -110,6 +114,7 @@ class QuadTree:
     """
 
     def __init__(self, box: AABB, max_depth=8, threshold=16):
+        """Create a quadtree over a box with depth and leaf-size limits."""
         self.box = box
         self.root = Node(box)
         self.max_depth = max_depth
@@ -124,7 +129,7 @@ class QuadTree:
 
             new_values = []
             for value in node.values:
-                i = node.get_quadrant(value.aabb)
+                i = node.get_quadrant(value.swept_aabb)
                 if i != -1:
                     # this value fits into a leaf box
                     node[i].values.append(value)
@@ -136,7 +141,7 @@ class QuadTree:
 
         def add_(node: Node, depth: int, value: RigidBody):
             assert node is not None
-            assert node.box.contains(value.aabb)
+            assert node.box.contains(value.swept_aabb)
             if node.is_leaf:
                 if depth >= self.max_depth or len(node.values) < self.threshold:
                     node.values.append(value)
@@ -145,7 +150,7 @@ class QuadTree:
                 # this leaf is full, split it
                 split_(node)
 
-            i = node.get_quadrant(value.aabb)
+            i = node.get_quadrant(value.swept_aabb)
             if i != -1:
                 # keep going down the tree
                 add_(node[i], depth+1, value)
@@ -180,13 +185,13 @@ class QuadTree:
 
         def remove_(node: Node, value: RigidBody):
             assert node is not None
-            assert node.box.contains(value.aabb)
+            assert node.box.contains(value.swept_aabb)
             if node.is_leaf:
                 # remove the value from the leaf
                 node.values.remove(value)
                 return True
 
-            i = node.get_quadrant(value.aabb)
+            i = node.get_quadrant(value.swept_aabb)
             if i != -1:
                 if remove_(node[i], value):
                     # try to merge the child node
@@ -204,14 +209,14 @@ class QuadTree:
             assert node is not None
             assert node.intersects(query_box)
             for value in node.values:
-                if query_box.intersects(value.aabb):
+                if query_box.intersects(value.swept_aabb):
                     values.append(value)
 
             if node.is_leaf:
                 return
 
             # gather values from child nodes
-            for i, child in enumerate(node):
+            for child in node:
                 if child.intersects(query_box):
                     query_(child, query_box, values)
 
@@ -224,14 +229,14 @@ class QuadTree:
         def find_intersections_in_child_(node: Node, value: RigidBody,
                                          intersections: List[Tuple[RigidBody, RigidBody]]):
             # depth first traversal of the tree looking for intersections
-            if node.box.disjoint(value.aabb):
+            if node.box.disjoint(value.swept_aabb):
                 # no need to check this subtree
                 return
 
             # check these nodes for intersections for value. The value is
             # above the current node, so we will not have a duplicate check.
             for other in node.values:
-                if value.aabb.intersects(other.aabb):
+                if value.swept_aabb.intersects(other.swept_aabb):
                     intersections.append((value, other))
 
             if node.is_leaf:
@@ -247,7 +252,7 @@ class QuadTree:
             num_values = len(node.values)
             for i in range(num_values):
                 for j in range(0, i):
-                    if node.values[i].aabb.intersects(node.values[j].aabb):
+                    if node.values[i].swept_aabb.intersects(node.values[j].swept_aabb):
                         intersections.append((node.values[i], node.values[j]))
 
             if node.is_leaf:

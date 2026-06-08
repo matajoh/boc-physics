@@ -219,3 +219,4 @@ __marimo__/
 
 # Agent scratch directory
 .copilot/
+.env*

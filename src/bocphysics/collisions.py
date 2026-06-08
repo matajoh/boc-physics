@@ -1,22 +1,25 @@
 """Module providing routines for collision detection."""
 
 import math
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
-from pygame import Vector2
+from bocpy import Matrix
 
 from .bodies import Circle, Polygon, RigidBody
 
 
-class Collision(NamedTuple("Collision", [("normal", Vector2), ("depth", float)])):
+class Collision(NamedTuple("Collision", [("normal", Matrix), ("depth", float)])):
+    """A collision described by its contact normal and penetration depth."""
+
     def reverse(self) -> "Collision":
+        """Return a collision with the normal pointing the other way."""
         return Collision(-self.normal, self.depth)
 
 
 def intersect_circle_circle(a: Circle, b: Circle) -> Collision:
     """Determine if two circles intersect and return the collision."""
     diff = b.position - a.position
-    diff_length2 = diff.dot(diff)
+    diff_length2 = diff.vecdot(diff)
     # due to the graphics system, a circle is visually a bit smaller
     # than its radius, so this is a bit of a hack to correct for that
     radius_sum = (a.radius + b.radius) * 0.97
@@ -32,12 +35,12 @@ def intersect_circle_circle(a: Circle, b: Circle) -> Collision:
     return Collision(normal, depth)
 
 
-def closest_vertex_on_polygon(point: Vector2, poly: Polygon) -> Vector2:
+def closest_vertex_on_polygon(point: Matrix, poly: Polygon) -> Matrix:
     """Find the closest vertex on a polygon to a point."""
     closest = None
     dist = float("inf")
     for v in poly.transformed_vertices:
-        d = (point - v).length_squared()
+        d = (point - v).magnitude_squared()
         if d < dist:
             closest = v
             dist = d
@@ -48,21 +51,21 @@ def closest_vertex_on_polygon(point: Vector2, poly: Polygon) -> Vector2:
 Projection = NamedTuple("Projection", [("min", float), ("max", float)])
 
 
-def project_polygon_onto_axis(poly: Polygon, axis: Vector2) -> Projection:
+def project_polygon_onto_axis(poly: Polygon, axis: Matrix) -> Projection:
     """Project a polygon onto an axis and return the projection."""
     min_proj = float("inf")
     max_proj = float("-inf")
     for v in poly.transformed_vertices:
-        proj = v.dot(axis)
+        proj = v.vecdot(axis)
         min_proj = min(min_proj, proj)
         max_proj = max(max_proj, proj)
 
     return Projection(min_proj, max_proj)
 
 
-def project_circle_onto_axis(circle: Circle, axis: Vector2) -> Projection:
+def project_circle_onto_axis(circle: Circle, axis: Matrix) -> Projection:
     """Project a circle onto an axis and return the projection."""
-    center = circle.position.dot(axis)
+    center = circle.position.vecdot(axis)
     # due to the graphics system, a circle is visually a bit smaller
     # than its radius, so this is a bit of a hack to correct for that
     return Projection(center - circle.radius * 0.97, center + circle.radius * 0.97)
@@ -70,7 +73,6 @@ def project_circle_onto_axis(circle: Circle, axis: Vector2) -> Projection:
 
 def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:
     """Determine if a circle and a polygon intersect and return the collision."""
-
     # we need to add this extra normal to account for when the circle is
     # at a corner.
     closest_point = closest_vertex_on_polygon(circle.position, poly)
@@ -91,7 +93,7 @@ def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:
             axis = normal
 
     dpos = poly.position - circle.position
-    if dpos.dot(axis) < 0:
+    if dpos.vecdot(axis) < 0:
         axis = -axis
 
     return Collision(axis, min_depth)
@@ -99,7 +101,6 @@ def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:
 
 def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
     """Determine if two polygons intersect and return the collision."""
-
     normals = a.transformed_normals + b.transformed_normals
     axis = None
     min_depth = float("inf")
@@ -115,13 +116,14 @@ def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
             axis = normal
 
     dpos = b.position - a.position
-    if dpos.dot(axis) < 0:
+    if dpos.vecdot(axis) < 0:
         axis = -axis
 
     return Collision(axis, min_depth)
 
 
 def detect_collision(a: RigidBody, b: RigidBody) -> Collision:
+    """Dispatch to the right narrow-phase test for the body pair."""
     if isinstance(a, Circle):
         if isinstance(b, Circle):
             return intersect_circle_circle(a, b)
