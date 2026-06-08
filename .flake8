@@ -1,0 +1,23 @@
+#============================== Baseline config ==============================
+[flake8]
+inline-quotes = double
+import-order-style = google
+docstring-convention = google
+max-line-length = 120
+application-import-names = bocphysics
+
+extend-ignore = E203, N812, N817
+
+# Verbatim Apache-2.0 vendor of pypi/warehouse — do not lint upstream style.
+# Use ``extend-exclude`` so flake8's default exclusions (``.git``, ``__pycache__``,
+# ``.tox``, ``.nox``, ``.eggs``, ``.venv`` …) are kept in addition to ours.
+extend-exclude = scripts/_vendored_warehouse_wheel.py
+
+#============================ Repo-specific config ===========================
+per-file-ignores =
+    test/*:D102,D103,D403
+    # .pyi stubs intentionally:
+    #   A003: methods shadowing Python builtins (Matrix.sum/min/max/abs/round)
+    #   D402: Sphinx-style docstrings start with the function signature
+    #   N802: NumPy-style ``Matrix.T`` transpose property is upper-case
+    *.pyi:A003,D402,N802

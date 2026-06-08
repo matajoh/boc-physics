@@ -1,18 +1,19 @@
 """Module providing routines for contact point localisation."""
 
 from typing import Tuple
-from pygame import Vector2
+
+from bocpy import Matrix
 
 from .bodies import Circle, Polygon, RigidBody
 from .collisions import Collision
 
 
-def point_segment_distance(p: Vector2, a: Vector2, b: Vector2) -> float:
+def point_segment_distance(p: Matrix, a: Matrix, b: Matrix) -> float:
     """Find the distance between a point and a line segment."""
     ab = b - a
     ap = p - a
-    proj = ap.dot(ab)
-    ab_length2 = ab.dot(ab)
+    proj = ap.vecdot(ab)
+    ab_length2 = ab.vecdot(ab)
     d = proj / ab_length2
     if d <= 0:
         closest = a
@@ -21,14 +22,15 @@ def point_segment_distance(p: Vector2, a: Vector2, b: Vector2) -> float:
     else:
         closest = a + ab * d
 
-    return (p - closest).length_squared()
+    return (p - closest).magnitude_squared()
 
 
-def are_different(a: Vector2, b: Vector2, tol: float) -> bool:
+def are_different(a: Matrix, b: Matrix, tol: float) -> bool:
+    """Check whether two points differ by more than a tolerance."""
     return abs(a.x - b.x) > tol or abs(a.y - b.y) > tol
 
 
-def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> Tuple[Vector2, None]:
+def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> Tuple[Matrix, None]:
     """Find the contact points between two polygons."""
     num_a_vertices = len(a.vertices)
     min_dist = float("inf")
@@ -63,25 +65,35 @@ def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> Tup
 
 
 def separate(a: RigidBody, b: RigidBody, collision: Collision):
+    """Push the bodies apart along the collision normal to remove the overlap."""
+    correction = collision.depth
     if not a.physics:
         # b does not move
-        b.position += collision.normal * collision.depth
+        b.move(collision.normal * correction)
     elif not b.physics:
         # a does not move
-        a.position -= collision.normal * collision.depth
+        a.move(-collision.normal * correction)
     else:
-        a.position -= collision.normal * collision.depth * 0.5
-        b.position += collision.normal * collision.depth * 0.5
+        a.move(-collision.normal * correction * 0.5)
+        b.move(collision.normal * correction * 0.5)
 
 
 def find_contact_points(a: RigidBody,
                         b: RigidBody,
-                        collision: Collision) -> Tuple[Vector2, Vector2]:
-    separate(a, b, collision)
-    if isinstance(a, Circle):
-        return a.position + collision.normal * a.radius, None
-    elif isinstance(a, Polygon):
-        if isinstance(b, Circle):
-            return b.position - collision.normal * b.radius, None
+                        collision: Collision) -> Tuple[Matrix, Matrix]:
+    """Find the contact points for a collision, then push the bodies apart.
 
-        return find_contact_points_polygon_polygon(a, b)
+    Description:
+        Contact points are computed from the overlapping configuration, before
+        any position correction, so the manifold reflects the true contact.
+        Only then are the bodies separated along the collision normal.
+    """
+    if isinstance(a, Circle):
+        points = a.position + collision.normal * a.radius, None
+    elif isinstance(b, Circle):
+        points = b.position - collision.normal * b.radius, None
+    else:
+        points = find_contact_points_polygon_polygon(a, b)
+
+    separate(a, b, collision)
+    return points

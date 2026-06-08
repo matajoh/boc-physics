@@ -1,20 +1,21 @@
-"""Module providing basic circle and polygon bodies.
-
-Revision activity: try adding a pentagon!
-"""
+"""Module providing basic circle and polygon bodies."""
 
 import math
-
 from typing import List, NamedTuple, Tuple, Union
 
-from pygame import Vector2
-import pygame
+from bocpy import Matrix
+from pyglet import shapes
+from pyglet.graphics import Batch
+
+from .render import BLACK, Camera, to_rgba
 
 
 Color = Tuple[int, int, int]
 
 
 class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float), ("bottom", float)])):
+    """An axis-aligned bounding box."""
+
     def disjoint(self, other: "AABB") -> bool:
         """Check if this AABB is disjoint from another AABB.
 
@@ -48,22 +49,30 @@ class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float)
         return not self.disjoint(other)
 
     @property
-    def top_left(self) -> Vector2:
+    def top_left(self) -> Matrix:
         """Get the top left corner of the AABB."""
-        return Vector2(self.left, self.top)
+        return Matrix.vector([self.left, self.top])
 
     @property
-    def center(self) -> Vector2:
+    def center(self) -> Matrix:
         """Get the center of the AABB."""
-        return Vector2((self.left + self.right) / 2, (self.top + self.bottom) / 2)
+        return Matrix.vector([(self.left + self.right) / 2, (self.top + self.bottom) / 2])
 
     @property
-    def size(self) -> Vector2:
+    def size(self) -> Matrix:
         """Get the size of the AABB."""
-        return Vector2(self.right - self.left, self.bottom - self.top)
+        return Matrix.vector([self.right - self.left, self.bottom - self.top])
+
+    def sweep(self, displacement: Matrix, slop: float) -> "AABB":
+        """Return this box grown to cover motion by displacement, padded by slop."""
+        return AABB(min(self.left, self.left + displacement.x) - slop,
+                    min(self.top, self.top + displacement.y) - slop,
+                    max(self.right, self.right + displacement.x) + slop,
+                    max(self.bottom, self.bottom + displacement.y) + slop)
 
     @staticmethod
-    def create(top_left: Vector2, size: Vector2) -> "AABB":
+    def create(top_left: Matrix, size: Matrix) -> "AABB":
+        """Create an AABB from a top-left corner and a size."""
         return AABB(top_left.x, top_left.y, top_left.x + size.x, top_left.y + size.y)
 
 
@@ -73,54 +82,71 @@ class Circle:
     def __init__(self,
                  radius: float,
                  color: Color,
-                 linear_velocity: Vector2,
-                 angular_velocity: float,
-                 mass: float,
-                 inv_mass: float,
-                 inertia: float,
-                 inv_inertia: float):
-        self.position = Vector2(0, 0)
+                 linear_velocity: Matrix = None,
+                 angular_velocity: float = None,
+                 mass: float = float("inf"),
+                 inv_mass: float = 0,
+                 inertia: float = float("inf"),
+                 inv_inertia: float = 0):
+        """Create a circle from its radius, colour, and mass properties."""
+        self.position = Matrix.vector([0, 0])
         self.angle = 0
         self.radius = radius
         self.color = color
-        self.linear_velocity = linear_velocity
-        self.angular_velocity = angular_velocity
         self.mass = mass
         self.inv_mass = inv_mass
         self.inertia = inertia
         self.inv_inertia = inv_inertia
+        if linear_velocity is not None:
+            self.linear_velocity = linear_velocity
+            self.angular_velocity = angular_velocity
+
         self.size = radius * 2
         self.aabb_ = AABB(0, 0, 0, 0)
+        # the swept AABB is per-frame transient state set by the engine
+        self.swept_aabb = self.aabb_
         self.update_needed_ = True
 
-    def draw(self, screen: pygame.Surface, center: Vector2, scale: float):
-        """NB not in scope for Tripos."""
-        pos = (self.position + center) * scale
-        radius = self.radius * scale
+    def draw(self, batch: Batch, project: Camera) -> Tuple:
+        """Draw the circle into the batch, returning shapes to keep alive."""
+        x, y = project(self.position)
+        radius = self.radius * project.scale
         cos = math.cos(self.angle)
         sin = math.sin(self.angle)
-        p = Vector2(cos, sin) * radius * 0.9
-        pygame.draw.circle(screen, self.color, pos, radius)
-        pygame.draw.circle(screen, "black", pos, radius, 4)
-        pygame.draw.line(screen, "black", pos, pos + p, 4)
+        p = Matrix.vector([cos, sin]) * radius * 0.9
+        # the screen is y-down once projected, so the heading flips its y
+        fill = shapes.Circle(x, y, radius, color=to_rgba(self.color), batch=batch)
+        outline = shapes.Arc(x, y, radius, thickness=4, color=BLACK, batch=batch)
+        heading = shapes.Line(x, y, x + p.x, y - p.y, thickness=4, color=BLACK, batch=batch)
+        return (fill, outline, heading)
 
-    def step(self, dt: float, gravity: Vector2):
+    def step(self, dt: float, gravity: Matrix):
+        """Integrate the circle's velocity and position over the time step."""
         self.linear_velocity += gravity * dt
         self.position += self.linear_velocity * dt
         self.angle += self.angular_velocity * dt
         self.update_needed_ = True
 
-    def move_to(self, pos: Vector2) -> "Circle":
-        self.position = pos
+    def move_to(self, pos: Matrix) -> "Circle":
+        """Move the circle to an absolute position and return it."""
+        self.position = pos.copy()
         self.update_needed_ = True
         return self
 
-    def move(self, delta: Vector2) -> "Circle":
+    def move(self, delta: Matrix) -> "Circle":
+        """Move the circle by a relative delta and return it."""
         self.position += delta
         self.update_needed_ = True
         return self
 
+    def rotate_to(self, angle: float) -> "Circle":
+        """Rotate the circle to an absolute angle and return it."""
+        self.angle = angle
+        self.update_needed_ = True
+        return self
+
     def to_dict(self):
+        """Return a JSON-serialisable dict describing the circle."""
         return {"kind": "circle",
                 "position": (self.position.x, self.position.y),
                 "angle": self.angle,
@@ -142,7 +168,11 @@ class Circle:
         return self.aabb_
 
     @staticmethod
-    def create(radius: float, density: float, color: Color):
+    def create(radius: float, density: float, color: Color, is_static=False):
+        """Create a circle, computing its mass and inertia from density."""
+        if is_static:
+            return Circle(radius, color)
+
         mass = radius**2 * math.pi * density
         inv_mass = 1 / mass
         # The moment of inertia of a circle is 0.5 * mass * radius^2
@@ -151,7 +181,7 @@ class Circle:
         inertia = 0.5 * mass * radius * radius
         inv_inertia = 1 / inertia
         return Circle(radius, color,
-                      Vector2(0, 0), 0,
+                      Matrix.vector([0, 0]), 0,
                       mass, inv_mass,
                       inertia, inv_inertia)
 
@@ -166,20 +196,21 @@ class Polygon:
     """
 
     def __init__(self,
-                 vertices: List[Vector2],
-                 normals: List[Vector2],
+                 vertices: List[Matrix],
+                 normals: List[Matrix],
                  color: Color,
-                 linear_velocity: Vector2 = None,
+                 linear_velocity: Matrix = None,
                  angular_velocity: float = None,
                  mass: float = float("inf"),
                  inv_mass: float = 0,
                  inertia: float = float("inf"),
                  inv_inertia: float = 0):
-        self.position = Vector2(0, 0)
+        """Create a polygon from its vertices, normals, colour, and mass properties."""
+        self.position = Matrix.vector([0, 0])
         self.angle = 0
         self.vertices = vertices
         self.normals = normals
-        self.radius = max(v.length() for v in vertices)
+        self.radius = max(v.length for v in vertices)
         self.color = color
         self.mass = mass
         self.inv_mass = inv_mass
@@ -190,33 +221,40 @@ class Polygon:
             self.angular_velocity = angular_velocity
 
         self.aabb_ = AABB(0, 0, 0, 0)
+        # the swept AABB is per-frame transient state set by the engine
+        self.swept_aabb = self.aabb_
         self.transformed_vertices_ = self.vertices.copy()
         self.transformed_normals_ = self.normals.copy()
         self.update_needed_ = True
 
-    def draw(self, screen: pygame.Surface, center: Vector2, scale: float):
-        """NB not in scope for Tripos."""
-        vertices = [(v + center) * scale for v in self.transformed_vertices]
-        pygame.draw.polygon(screen, self.color, vertices)
-        pygame.draw.polygon(screen, "black", vertices, 4)
+    def draw(self, batch: Batch, project: Camera) -> Tuple:
+        """Draw the polygon into the batch, returning shapes to keep alive."""
+        vertices = [project(v) for v in self.transformed_vertices]
+        fill = shapes.Polygon(*vertices, color=to_rgba(self.color), batch=batch)
+        outline = shapes.MultiLine(*vertices, closed=True, thickness=4, color=BLACK, batch=batch)
+        return (fill, outline)
 
-    def step(self, dt: float, gravity: Vector2):
+    def step(self, dt: float, gravity: Matrix):
+        """Integrate the polygon's velocity and position over the time step."""
         self.linear_velocity += gravity * dt
         self.position += self.linear_velocity * dt
         self.angle += self.angular_velocity * dt
         self.update_needed_ = True
 
-    def move_to(self, pos: Vector2) -> "Polygon":
-        self.position = pos
+    def move_to(self, pos: Matrix) -> "Polygon":
+        """Move the polygon to an absolute position and return it."""
+        self.position = pos.copy()
         self.update_needed_ = True
         return self
 
-    def move(self, delta: Vector2) -> "Polygon":
+    def move(self, delta: Matrix) -> "Polygon":
+        """Move the polygon by a relative delta and return it."""
         self.position += delta
         self.update_needed_ = True
         return self
 
     def rotate_to(self, angle: float) -> "Polygon":
+        """Rotate the polygon to an absolute angle and return it."""
         self.angle = angle
         self.update_needed_ = True
         return self
@@ -237,16 +275,16 @@ class Polygon:
         cos_angle = math.cos(self.angle)
         sin_angle = math.sin(self.angle)
         for i, n in enumerate(self.normals):
-            self.transformed_normals_[i] = Vector2(n.x * cos_angle - n.y * sin_angle,
-                                                   n.x * sin_angle + n.y * cos_angle)
+            self.transformed_normals_[i] = Matrix.vector([n.x * cos_angle - n.y * sin_angle,
+                                                          n.x * sin_angle + n.y * cos_angle])
 
         min_x = float("inf")
         min_y = float("inf")
         max_x = float("-inf")
         max_y = float("-inf")
         for i, v in enumerate(self.vertices):
-            tv = Vector2(v.x * cos_angle - v.y * sin_angle,
-                         v.x * sin_angle + v.y * cos_angle)
+            tv = Matrix.vector([v.x * cos_angle - v.y * sin_angle,
+                                v.x * sin_angle + v.y * cos_angle])
             tv += self.position
             min_x = min(min_x, tv.x)
             min_y = min(min_y, tv.y)
@@ -257,6 +295,7 @@ class Polygon:
         self.aabb_ = AABB(min_x, min_y, max_x, max_y)
 
     def to_dict(self):
+        """Return a JSON-serialisable dict describing the polygon."""
         return {"kind": "polygon",
                 "position": (self.position.x, self.position.y),
                 "angle": self.angle,
@@ -265,27 +304,31 @@ class Polygon:
 
     @property
     def aabb(self) -> AABB:
+        """Get the axis-aligned bounding box of the polygon."""
         self.update_transform()
         return self.aabb_
 
     @property
-    def transformed_vertices(self) -> List[Vector2]:
+    def transformed_vertices(self) -> List[Matrix]:
+        """Get the polygon's vertices in world space."""
         self.update_transform()
         return self.transformed_vertices_
 
     @property
-    def transformed_normals(self) -> List[Vector2]:
+    def transformed_normals(self) -> List[Matrix]:
+        """Get the polygon's edge normals in world space."""
         self.update_transform()
         return self.transformed_normals_
 
     @staticmethod
     def create_rectangle(width: float, height: float, density: float,
                          color: Color, is_static=False):
-        vertices = [Vector2(-width / 2, -height / 2),
-                    Vector2(width / 2, -height / 2),
-                    Vector2(width / 2, height / 2),
-                    Vector2(-width / 2, height / 2)]
-        normals = [Vector2(0, 1), Vector2(1, 0)]
+        """Create a rectangular polygon from its width, height, and density."""
+        vertices = [Matrix.vector([-width / 2, -height / 2]),
+                    Matrix.vector([width / 2, -height / 2]),
+                    Matrix.vector([width / 2, height / 2]),
+                    Matrix.vector([-width / 2, height / 2])]
+        normals = [Matrix.vector([0, 1]), Matrix.vector([1, 0])]
         if is_static:
             return Polygon(vertices, normals, color)
 
@@ -298,15 +341,16 @@ class Polygon:
         inv_inertia = 1 / inertia
 
         return Polygon(vertices, normals, color,
-                       Vector2(0, 0), 0,
+                       Matrix.vector([0, 0]), 0,
                        mass, inv_mass,
                        inertia, inv_inertia)
 
     @staticmethod
     def create_regular_polygon(num_sides: int, radius: float, density: float,
                                color: Color, is_static=False):
+        """Create a regular polygon from its side count, radius, and density."""
         angle = 2 * math.pi / num_sides
-        vertices = [Vector2(radius * math.cos(i * angle), radius * math.sin(i * angle))
+        vertices = [Matrix.vector([radius * math.cos(i * angle), radius * math.sin(i * angle)])
                     for i in range(num_sides)]
         normals = []
         if num_sides % 2 == 0:
@@ -319,10 +363,10 @@ class Polygon:
                 normals.append(n)
 
         if is_static:
-            return Polygon(Vector2(0, 0), 0, vertices, normals, color)
+            return Polygon(vertices, normals, color)
 
         apothem = radius * math.cos(angle / 2)
-        perimeter = num_sides * (vertices[1] - vertices[0]).length()        
+        perimeter = num_sides * (vertices[1] - vertices[0]).length
         mass = 0.5 * perimeter * apothem * density
         inv_mass = 1 / mass
         # The moment of inertia of a regular polygon is 1/2 m s^2 (1 - 2/3 sin^2(\pi / n))
@@ -331,7 +375,7 @@ class Polygon:
         inv_inertia = 1 / inertia
 
         return Polygon(vertices, normals, color,
-                       Vector2(0, 0), 0,
+                       Matrix.vector([0, 0]), 0,
                        mass, inv_mass,
                        inertia, inv_inertia)
 
