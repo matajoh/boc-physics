@@ -223,8 +223,11 @@ class Polygon:
         self.aabb_ = AABB(0, 0, 0, 0)
         # the swept AABB is per-frame transient state set by the engine
         self.swept_aabb = self.aabb_
-        self.transformed_vertices_ = self.vertices.copy()
-        self.transformed_normals_ = self.normals.copy()
+        # vertices and normals live as (N x 2) blocks so the transform is one batched matrix product
+        self.vertices_block_ = Matrix(len(vertices), 2, [c for v in vertices for c in (v.x, v.y)])
+        self.normals_block_ = Matrix(len(normals), 2, [c for n in normals for c in (n.x, n.y)])
+        self.transformed_vertices_block_ = self.vertices_block_.copy()
+        self.transformed_normals_block_ = self.normals_block_.copy()
         self.update_needed_ = True
 
     def draw(self, batch: Batch, project: Camera) -> Tuple:
@@ -266,7 +269,8 @@ class Polygon:
             We want to avoid updating the transformed vertices and normals
             unless absolutely necessary. This is an example of lazy
             evaluation using a "dirty" bit, in this case the update_needed_
-            flag.
+            flag. The rotation is a single batched matrix product over the
+            whole (N x 2) vertex block rather than a per-vertex Python loop.
         """
         if not self.update_needed_:
             return
@@ -274,25 +278,14 @@ class Polygon:
         self.update_needed_ = False
         cos_angle = math.cos(self.angle)
         sin_angle = math.sin(self.angle)
-        for i, n in enumerate(self.normals):
-            self.transformed_normals_[i] = Matrix.vector([n.x * cos_angle - n.y * sin_angle,
-                                                          n.x * sin_angle + n.y * cos_angle])
+        # rot_t is the transpose of the rotation matrix, so a row batch rotates as block @ rot_t
+        rot_t = Matrix(2, 2, [cos_angle, sin_angle, -sin_angle, cos_angle])
+        self.transformed_normals_block_ = self.normals_block_ @ rot_t
+        self.transformed_vertices_block_ = self.vertices_block_ @ rot_t + self.position
 
-        min_x = float("inf")
-        min_y = float("inf")
-        max_x = float("-inf")
-        max_y = float("-inf")
-        for i, v in enumerate(self.vertices):
-            tv = Matrix.vector([v.x * cos_angle - v.y * sin_angle,
-                                v.x * sin_angle + v.y * cos_angle])
-            tv += self.position
-            min_x = min(min_x, tv.x)
-            min_y = min(min_y, tv.y)
-            max_x = max(max_x, tv.x)
-            max_y = max(max_y, tv.y)
-            self.transformed_vertices_[i] = tv
-
-        self.aabb_ = AABB(min_x, min_y, max_x, max_y)
+        low = self.transformed_vertices_block_.min(axis=0)
+        high = self.transformed_vertices_block_.max(axis=0)
+        self.aabb_ = AABB(low.x, low.y, high.x, high.y)
 
     def to_dict(self):
         """Return a JSON-serialisable dict describing the polygon."""
@@ -309,16 +302,16 @@ class Polygon:
         return self.aabb_
 
     @property
-    def transformed_vertices(self) -> List[Matrix]:
-        """Get the polygon's vertices in world space."""
+    def transformed_vertices(self) -> Matrix:
+        """Get the polygon's vertices in world space as an (N x 2) block."""
         self.update_transform()
-        return self.transformed_vertices_
+        return self.transformed_vertices_block_
 
     @property
-    def transformed_normals(self) -> List[Matrix]:
-        """Get the polygon's edge normals in world space."""
+    def transformed_normals(self) -> Matrix:
+        """Get the polygon's edge normals in world space as an (N x 2) block."""
         self.update_transform()
-        return self.transformed_normals_
+        return self.transformed_normals_block_
 
     @staticmethod
     def create_rectangle(width: float, height: float, density: float,

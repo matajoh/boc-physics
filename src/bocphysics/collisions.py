@@ -53,14 +53,9 @@ Projection = NamedTuple("Projection", [("min", float), ("max", float)])
 
 def project_polygon_onto_axis(poly: Polygon, axis: Matrix) -> Projection:
     """Project a polygon onto an axis and return the projection."""
-    min_proj = float("inf")
-    max_proj = float("-inf")
-    for v in poly.transformed_vertices:
-        proj = v.vecdot(axis)
-        min_proj = min(min_proj, proj)
-        max_proj = max(max_proj, proj)
-
-    return Projection(min_proj, max_proj)
+    # one batched dot projects every vertex onto the axis at once
+    projections = poly.transformed_vertices.vecdot(axis, axis=1)
+    return Projection(projections.min(), projections.max())
 
 
 def project_circle_onto_axis(circle: Circle, axis: Matrix) -> Projection:
@@ -77,7 +72,7 @@ def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:
     # at a corner.
     closest_point = closest_vertex_on_polygon(circle.position, poly)
     diff = closest_point - circle.position
-    normals = poly.transformed_normals + [diff.normalize()]
+    normals = Matrix.concat([poly.transformed_normals, diff.normalize()], 0)
 
     axis: Optional[int] = None
     min_depth = float("inf")
@@ -101,7 +96,7 @@ def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:
 
 def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
     """Determine if two polygons intersect and return the collision."""
-    normals = a.transformed_normals + b.transformed_normals
+    normals = Matrix.concat([a.transformed_normals, b.transformed_normals], 0)
     axis = None
     min_depth = float("inf")
     for normal in normals:
