@@ -4,10 +4,6 @@ import math
 from typing import List, NamedTuple, Tuple, Union
 
 from bocpy import Matrix
-from pyglet import shapes
-from pyglet.graphics import Batch
-
-from .render import BLACK, Camera, to_rgba
 
 
 Color = Tuple[int, int, int]
@@ -91,6 +87,7 @@ class Circle:
         """Create a circle from its radius, colour, and mass properties."""
         self.position = Matrix.vector([0, 0])
         self.angle = 0
+        self.uid = None
         self.radius = radius
         self.color = color
         self.mass = mass
@@ -106,19 +103,6 @@ class Circle:
         # the swept AABB is per-frame transient state set by the engine
         self.swept_aabb = self.aabb_
         self.update_needed_ = True
-
-    def draw(self, batch: Batch, project: Camera) -> Tuple:
-        """Draw the circle into the batch, returning shapes to keep alive."""
-        x, y = project(self.position)
-        radius = self.radius * project.scale
-        cos = math.cos(self.angle)
-        sin = math.sin(self.angle)
-        p = Matrix.vector([cos, sin]) * radius * 0.9
-        # the screen is y-down once projected, so the heading flips its y
-        fill = shapes.Circle(x, y, radius, color=to_rgba(self.color), batch=batch)
-        outline = shapes.Arc(x, y, radius, thickness=4, color=BLACK, batch=batch)
-        heading = shapes.Line(x, y, x + p.x, y - p.y, thickness=4, color=BLACK, batch=batch)
-        return (fill, outline, heading)
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the circle's velocity and position over the time step."""
@@ -208,6 +192,7 @@ class Polygon:
         """Create a polygon from its vertices, normals, colour, and mass properties."""
         self.position = Matrix.vector([0, 0])
         self.angle = 0
+        self.uid = None
         self.vertices = vertices
         self.normals = normals
         self.radius = max(v.length for v in vertices)
@@ -229,13 +214,6 @@ class Polygon:
         self.transformed_vertices_block_ = self.vertices_block_.copy()
         self.transformed_normals_block_ = self.normals_block_.copy()
         self.update_needed_ = True
-
-    def draw(self, batch: Batch, project: Camera) -> Tuple:
-        """Draw the polygon into the batch, returning shapes to keep alive."""
-        vertices = [project(v) for v in self.transformed_vertices]
-        fill = shapes.Polygon(*vertices, color=to_rgba(self.color), batch=batch)
-        outline = shapes.MultiLine(*vertices, closed=True, thickness=4, color=BLACK, batch=batch)
-        return (fill, outline)
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the polygon's velocity and position over the time step."""

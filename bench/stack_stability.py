@@ -19,28 +19,20 @@ Run from the repo root with the project venv active::
 
 import argparse
 
-from bocpy import Matrix
-
-from bocphysics.bodies import Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
+from bocphysics.scene import (make_pyramid_scene, make_stack_scene,
+                              STACK_BOX_SIZE, STACK_FLOOR_TOP)
 
-BOX_SIZE = 2.0
-FLOOR_TOP = 9.0
+BOX_SIZE = STACK_BOX_SIZE
+FLOOR_TOP = STACK_FLOOR_TOP
 
 
 def build_stack(engine, levels: int):
     """Add a floor and a vertical column of boxes resting on it."""
-    floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)
-    engine.add_body(floor.move_to(Matrix.vector([0, 10])))
-    # stack upward in the y-down world: the lowest box centre sits one half
-    # height above the floor top, each box one full height above the last
-    for i in range(levels):
-        y = FLOOR_TOP - BOX_SIZE / 2 - i * BOX_SIZE
-        box = Polygon.create_rectangle(BOX_SIZE, BOX_SIZE, 2.0,
-                                       (50, 120, 200))
-        engine.add_body(box.move_to(Matrix.vector([0, y])))
+    for body in make_stack_scene(levels).build():
+        engine.add_body(body)
 
 
 def build_pyramid(engine, levels: int):
@@ -52,18 +44,8 @@ def build_pyramid(engine, levels: int):
         case where full position projection can over-correct and topple a
         stack, unlike a perfectly collinear column.
     """
-    floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)
-    engine.add_body(floor.move_to(Matrix.vector([0, 10])))
-    for row in range(levels):
-        y = FLOOR_TOP - BOX_SIZE / 2 - row * BOX_SIZE
-        count = levels - row
-        # centre each row so the box above straddles two boxes below
-        offset = (count - 1) * BOX_SIZE / 2
-        for col in range(count):
-            x = col * BOX_SIZE - offset
-            box = Polygon.create_rectangle(BOX_SIZE, BOX_SIZE, 2.0,
-                                           (50, 120, 200))
-            engine.add_body(box.move_to(Matrix.vector([x, y])))
+    for body in make_pyramid_scene(levels).build():
+        engine.add_body(body)
 
 
 def total_kinetic_energy(engine) -> float:
@@ -95,6 +77,12 @@ def dynamic_bodies(engine):
     return [body for body in engine.bodies if body.physics]
 
 
+def horizontal_span(bodies) -> float:
+    """Return the horizontal span of the bodies' centres in metres."""
+    xs = [body.position.x for body in bodies]
+    return max(xs) - min(xs) if xs else 0.0
+
+
 def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "column") -> dict:
     """Settle a stack and return its stability metrics."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
@@ -106,10 +94,15 @@ def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "colum
 
     # record each body's starting position so drift is measured against it
     start_x = {id(body): body.position.x for body in dynamic_bodies(engine)}
+    start_span = horizontal_span(dynamic_bodies(engine))
 
     jitter_sum = 0.0
+    peak_spread = 0.0
     for frame in range(1, frames + 1):
         engine.step(dt)
+        # spread is measured against the start span so a pyramid bulging sideways
+        # before it topples shows up even while every body is still in bounds
+        peak_spread = max(peak_spread, horizontal_span(dynamic_bodies(engine)) - start_span)
         if frame > frames - tail:
             jitter_sum += total_kinetic_energy(engine)
 
@@ -121,6 +114,8 @@ def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "colum
         "penetration": total_penetration(engine),
         "lean": max(abs(b.angle) for b in bodies),
         "drift": max(abs(b.position.x - start_x[id(b)]) for b in bodies),
+        "spread": horizontal_span(bodies) - start_span,
+        "peak_spread": peak_spread,
         "jitter": jitter_sum / tail,
     }
 
@@ -142,6 +137,8 @@ def main():
     print(f"  penetration {metrics['penetration']:.4f}")
     print(f"  lean        {metrics['lean']:.4f}  rad")
     print(f"  drift       {metrics['drift']:.4f}  (from start position)")
+    print(f"  spread      {metrics['spread']:+.4f}  (span growth from start)")
+    print(f"  peak_spread {metrics['peak_spread']:+.4f}  (max span growth over run)")
     print(f"  jitter      {metrics['jitter']:.4f}  mean KE over last {args.tail} frames")
 
 

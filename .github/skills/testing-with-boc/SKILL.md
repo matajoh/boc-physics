@@ -23,18 +23,20 @@ execute asynchronously on worker interpreters.
 | Concept | Description |
 |---------|-------------|
 | `Cown(value)` | A concurrently-owned wrapper. Behaviors receive exclusive temporal access to the cown's `.value`. |
-| `@when(*cowns)` | Decorator that schedules the function as a behavior. The decorator replaces the function with a `Cown` holding the return value. **The decorated function must have exactly as many parameters as there are arguments to `@when`.** |
+| `@when(*cowns)` | Decorator that schedules the function as a behavior. The decorator replaces the function with a `Cown` holding the return value. **The first N parameters bind to the N cowns; any extra values are captured as trailing parameters with defaults (`x=x`).** |
 | `send(tag, contents)` | Sends a cross-interpreter message with the given tag. |
 | `receive(tags, timeout)` | Blocks until a message with a matching tag arrives (or times out). Returns `(TIMEOUT, None)` on timeout. |
 | `TIMEOUT` | Sentinel string returned as the tag by `receive` when a timeout elapses. |
 | `wait(timeout)` | Blocks until all scheduled behaviors have completed. |
 
-### Critical rule: parameter count must match `@when` argument count
+### Cown count, parameter count, and captured extras
 
-The number of parameters on the decorated function **must exactly equal** the
-number of arguments passed to `@when`. A mismatch causes unspecified behavior
-that can crash the worker interpreter. Because the behavior never completes, the
-test will hang forever unless `receive` is called with a timeout.
+The first `N` parameters of the decorated function bind positionally to the `N`
+arguments of `@when`. Any value the behavior needs from the enclosing scope
+must be a **trailing parameter carrying a default**, snapshotted at schedule
+time. A behavior runs in another interpreter and **cannot close over a free
+variable** — doing so raises `SyntaxError` at `@when` decoration time, naming
+the offending variable.
 
 ```python
 # CORRECT — 1 @when arg, 1 function param
@@ -42,56 +44,45 @@ test will hang forever unless `receive` is called with a timeout.
 def good(x):
     return x.value * 2
 
-# WRONG — 1 @when arg, 2 function params (default args count!)
-@when(x)
-def bad(x, factor=2):       # will crash — factor is an extra param
-    return x.value * factor
-
-# FIX — capture extra values via closure, not default args
+# CORRECT — extra value captured as a trailing default by name
 factor = 2
 @when(x)
-def fixed(x):               # 1 param matches 1 @when arg
-    return x.value * factor  # factor captured from enclosing scope
+def with_extra(x, factor=factor):   # ``factor`` captured at schedule time
+    return x.value * factor
+
+# WRONG — closing over ``factor`` raises SyntaxError at decoration time
+factor = 2
+@when(x)
+def bad(x):
+    return x.value * factor          # free variable — rejected
 ```
 
-### Do not use the `def _(c, x=x)` loop-capture idiom
+### Use the `def _(c, x=x)` loop-capture idiom
 
-A common Python idiom for snapshotting a loop variable is to bind it as a
-default argument:
+The canonical Python idiom for snapshotting a loop variable as a default
+argument is now **required** — a bare reference to the loop variable would
+close over a free variable and raise `SyntaxError`:
 
 ```python
 for i, c in enumerate(cowns):
     @when(c)
-    def _(c, i=i):          # unnecessary AND breaks @when
+    def _(c, i=i):          # capture i; a bare `i` reference would fail
         send("done", i)
 ```
 
-**You don't need this with `@when`.** The transpiler rewrites the call site as
-`whencall('__behavior__N', (c,), (i,))`, snapshotting captures into a tuple at
-schedule time. There is no late-binding hazard to defend against — just
-reference the loop variable directly:
+The default's name is what gets captured: `def b(c, i=i)` captures `i`, and the
+rename form `def b(c, x=y)` captures `y` and binds it into param `x`. The
+leading cown parameters never carry defaults. See the "Inspecting the Worker
+Bindings Module" section of `.github/copilot-instructions.md` for how to inspect
+the bindings module workers import.
 
-```python
-for i, c in enumerate(cowns):
-    @when(c)
-    def _(c):
-        send("done", i)     # i is captured by value at schedule time
-```
-
-Adding `i=i` to the signature actively breaks the behavior. The transpiler
-treats every name in the signature as a behavior parameter and discards the
-default, so the worker sees a function with an extra positional arg that the
-runtime never supplies. See the "Inspecting Transpiler Output" section of
-`.github/copilot-instructions.md` for how to use `export_module.py` to
-confirm exactly which names are parameters and which are captures.
-
-If you do want a fresh scope per iteration (e.g. to avoid sharing mutable
+If you want a fresh scope per iteration (e.g. to avoid sharing mutable
 state between iterations), use a helper function:
 
 ```python
 def _schedule(c, i):                # fresh scope per iteration
     @when(c)
-    def _(c):
+    def _(c, i=i):                  # still capture i as a trailing default
         send("done", i)
 
 for i, c in enumerate(cowns):
@@ -570,13 +561,13 @@ def test_object_in_cown(self):
 
 | Pitfall | Fix |
 |---------|-----|
-| **Parameter count mismatch in `@when`** | The decorated function must have **exactly** as many parameters as `@when` arguments. A mismatch crashes the worker. Use closure variables instead of default arguments to capture extra values. |
+| **Parameter count mismatch in `@when`** | The first N parameters must match the N `@when` cowns; any extra value must be a **trailing parameter with a default** (`x=x`). A closure over a free variable raises `SyntaxError` at decoration. |
 | **Classes/functions defined inside a test** | Behaviors run in sub-interpreters that import the module. Define all classes and functions used in behaviors at **module level** so workers can resolve them. |
 | Asserting in the test body right after `@when` | The behavior hasn't run yet. Use `send`/`receive` to synchronize. |
 | `receive` without a timeout | If a behavior crashes silently, the test hangs forever. Always pass a timeout (e.g. `RECEIVE_TIMEOUT = 10`) and assert the result is not `TIMEOUT`. |
 | Forgetting `wait()` in teardown | Pending behaviors may leak into the next test class. Always call `wait()` in `teardown_class`. |
 | Reading `cown.value` outside a behavior | A cown must be acquired first. Read values inside `@when` or use `send`/`receive`. |
-| Using default arguments to capture loop variables | Default args add parameters, breaking the arg-count rule. Use a closure variable instead: `val = i` on a separate line before `@when`. |
+| Trying to capture a loop variable by closure | A behavior runs in another interpreter and cannot close over free variables (raises `SyntaxError`). Capture it as a trailing default instead: `def _(c, i=i): ...`. |
 | Mismatched `receive_asserts` count | The count must match the exact number of `send("assert", ...)` calls expected. |
 | Non-XIData-compatible objects in cowns across interpreters | Stick to built-in types or objects that support cross-interpreter data. |
 | Test function names with uppercase letters (N802) | Test names must be lowercase. E.g., `test_t_equals_transpose`, **not** `test_T_equals_transpose`, even when testing a property like `.T`. |

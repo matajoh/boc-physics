@@ -2,6 +2,8 @@
 
 from typing import List, Tuple
 
+from bocpy import Matrix
+
 from .bodies import AABB, RigidBody
 
 
@@ -102,6 +104,23 @@ class Node:
                 return 3
 
         return -1
+
+    def centre_quadrant(self, point: Matrix) -> int:
+        """Get the quadrant whose cell contains a point.
+
+        Description:
+            Unlike get_quadrant, which tests a whole box and returns -1 when it
+            straddles the centre, a single point always lies in exactly one
+            quadrant. This is what lets the loose tree place a body by its
+            centre into one patch with no straddlers.
+        """
+        center = self.box.center
+        right = point.x >= center.x
+        below = point.y >= center.y
+        if below:
+            return 3 if right else 2
+
+        return 1 if right else 0
 
 
 class QuadTree:
@@ -269,3 +288,81 @@ class QuadTree:
                 find_all_intersections_(child, intersections)
 
         find_all_intersections_(self.root, intersections)
+
+
+class LooseQuadTree:
+    """A centre-based loose quadtree used to cut the world into patches.
+
+    Description:
+        Where the broad-phase QuadTree inserts a body's swept box and lets a
+        large body straddle several cells, this tree inserts each body by its
+        centre point, so a body always lands in exactly one cell. The descent
+        is "loose": a body sinks only while the child cell stays at least
+        coarsen times the body's size, so a big body parks in a big cell rather
+        than forcing a deep subdivision. The cells that end up holding bodies
+        tile the live set and become the independent patches of the parallel
+        solver, with no straddlers to contend over.
+    """
+
+    def __init__(self, box: AABB, max_depth=8, threshold=8, coarsen=2.0):
+        """Create a loose quadtree over a box with depth, leaf, and coarsen limits."""
+        self.box = box
+        self.root = Node(box)
+        self.max_depth = max_depth
+        self.threshold = threshold
+        self.coarsen = coarsen
+
+    def insert(self, body: RigidBody):
+        """Insert a body by its centre, parking it in exactly one cell."""
+        self.insert_(self.root, 0, body)
+
+    def insert_(self, node: Node, depth: int, body: RigidBody):
+        """Descend by centre until the loose stop rule parks the body."""
+        # a body must not sink into any cell smaller than its own loose bound
+        too_deep = (depth >= self.max_depth or
+                    node.box.size.x / 2 < self.coarsen * body.radius * 2)
+        if node.is_leaf:
+            if too_deep or len(node.values) < self.threshold:
+                node.values.append(body)
+                return
+
+            self.split_(node)
+
+        if too_deep:
+            node.values.append(body)
+            return
+
+        i = node.centre_quadrant(body.position)
+        self.insert_(node[i], depth + 1, body)
+
+    def split_(self, node: Node):
+        """Subdivide a leaf and redistribute its bodies by centre.
+
+        Description:
+            A body too large for a child cell stays parked at this node, which
+            keeps the loose invariant: a body never sinks below its own size.
+        """
+        node.to_inner()
+        values = node.values
+        node.values = []
+        child_width = node.box.size.x / 2
+        for body in values:
+            if child_width < self.coarsen * body.radius * 2:
+                node.values.append(body)
+            else:
+                node[node.centre_quadrant(body.position)].values.append(body)
+
+    def cells(self) -> List[Node]:
+        """Return every node that holds bodies; each becomes one independent patch."""
+        found = []
+
+        def walk(node: Node):
+            if node.values:
+                found.append(node)
+
+            if not node.is_leaf:
+                for child in node:
+                    walk(child)
+
+        walk(self.root)
+        return found

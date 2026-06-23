@@ -2,46 +2,59 @@
 
 Drops a variety of shapes into an open box and runs the engine without a
 window, reporting wall-clock cost per frame and two convergence proxies
-(total kinetic energy and total penetration depth). This is a perf /
-convergence probe, NOT a reproducible correctness test: spawn placement draws
-from an unseeded ``random``, so numbers vary run to run.
+(total kinetic energy and total penetration depth). Spawn placement draws from
+the seeded ``Matrix`` PRNG, so a given ``--seed`` reproduces the same scene
+every run; only wall-clock timing varies.
 
 Run from the repo root with the project venv active::
 
-    python bench/drop_box.py --shapes 80 --frames 300
+    python bench/drop_box.py --shapes 80 --frames 300 --seed 7
 """
 
 import argparse
 import math
 import os
-import random
 import statistics
 import time
 
-from bocpy import Matrix
+from bocpy import Matrix, quiesce, wait
 
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.parallel import ParallelStepper
 from bocphysics.scene import OPEN_BOX
+
+# disjoint uid range per run: the worker shell cache is keyed by uid and assumes
+# uids are never reused, but each run rebuilds the engine and restarts uids at 0
+UID_STRIDE = 100_000
+
+
+# sentinel for "use the ParallelStepper default partition" (now equal-pop slabs)
+DEFAULT_PARTITION = "default"
+
+
+def rand_int(low: int, high: int) -> int:
+    """Return an integer in [low, high] inclusive from the seeded Matrix PRNG."""
+    return min(high, int(Matrix.uniform(low, high + 1)))
 
 
 def spawn_one(engine):
     """Drop a single randomly-shaped, randomly-rotated body high above the floor."""
-    x = random.uniform(-11, 11)
+    x = Matrix.uniform(-11, 11)
     # the world is y-down with the floor near y=10, so small y is high up
-    y = random.uniform(-13, -7)
-    angle = random.uniform(0, 2 * math.pi)
-    color = (random.randint(40, 255), random.randint(40, 255), random.randint(40, 255))
-    kind = random.random()
+    y = Matrix.uniform(-13, -7)
+    angle = Matrix.uniform(0, 2 * math.pi)
+    color = (rand_int(40, 255), rand_int(40, 255), rand_int(40, 255))
+    kind = Matrix.uniform(0, 1)
     if kind < 0.4:
-        body = Circle.create(random.uniform(0.6, 1.2), 2.0, color)
+        body = Circle.create(Matrix.uniform(0.6, 1.2), 2.0, color)
     elif kind < 0.7:
-        body = Polygon.create_rectangle(random.uniform(1.2, 2.4),
-                                        random.uniform(1.2, 2.4), 2.0, color)
+        body = Polygon.create_rectangle(Matrix.uniform(1.2, 2.4),
+                                        Matrix.uniform(1.2, 2.4), 2.0, color)
     else:
-        body = Polygon.create_regular_polygon(random.randint(3, 8),
-                                              random.uniform(0.8, 1.4), 2.0, color)
+        body = Polygon.create_regular_polygon(rand_int(3, 8),
+                                              Matrix.uniform(0.8, 1.4), 2.0, color)
 
     engine.add_body(body.move_to(Matrix.vector([x, y])).rotate_to(angle))
 
@@ -119,12 +132,13 @@ def open_encoder(path: str, width: int, height: int, fps: int):
 
 
 def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
-                 spawn_frames: int, path: str, fps: int):
+                 spawn_frames: int, path: str, fps: int, seed: int):
     """Run one simulation, rendering every frame and encoding it to a video file."""
     import pyglet
 
     from bocphysics.engine import PhysicsEngine
 
+    Matrix.seed(seed)
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
                            DetectionKind[detect.upper()], show_contacts=False)
     for body in OPEN_BOX.build():
@@ -164,17 +178,35 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
     print(f"wrote {path} ({frames} frames at {fps} fps, {len(engine.bodies)} bodies)")
 
 
+def make_stepper(engine, num_slabs):
+    """Build a ParallelStepper for the chosen partition: default, slabs, or quadtree."""
+    if num_slabs == DEFAULT_PARTITION:
+        return ParallelStepper(engine)
+
+    return ParallelStepper(engine, num_slabs=num_slabs)
+
+
 def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
-             spawn_frames: int, snapshot_frames=(), snapshot_dir="docs/images"):
+             spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
+             parallel=False, workers=None, uid_base=0, num_slabs=DEFAULT_PARTITION):
     """Run one simulation, returning report rows, mean ms/frame, and body count."""
     from bocphysics.engine import PhysicsEngine
 
+    Matrix.seed(seed)
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
                            DetectionKind[detect.upper()], show_contacts=False)
+    # a disjoint uid base keeps this run's bodies from colliding with a prior
+    # run's per-interpreter shell cache (uids are assumed never reused)
+    engine.next_uid = uid_base
     for body in OPEN_BOX.build():
         engine.add_body(body)
 
     schedule = make_spawn_schedule(shapes, frames, spawn_frames)
+
+    stepper = None
+    if parallel:
+        stepper = make_stepper(engine, num_slabs)
+        stepper.begin(worker_count=workers, dt=dt)
 
     window = None
     camera = None
@@ -194,7 +226,12 @@ def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report
             spawn_one(engine)
 
         start = time.perf_counter()
-        engine.step(dt)
+        if stepper is not None:
+            # one parallel frame: schedule the fan-out, then drain it to completion
+            if stepper.step():
+                quiesce(30.0)
+        else:
+            engine.step(dt)
         elapsed = time.perf_counter() - start
         total_elapsed += elapsed
         interval_elapsed += elapsed
@@ -223,10 +260,16 @@ def mean_std(values):
 
 
 def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
-        runs: int, spawn_frames: int, snapshot_frames=(), snapshot_dir="docs/images"):
+        runs: int, spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
+        parallel=False, workers=None, num_slabs=DEFAULT_PARTITION):
     """Run the benchmark over several runs and print mean +/- std statistics."""
+    label = f"parallel workers={workers}" if parallel else "serial"
+    if parallel:
+        cut = "slabs(default)" if num_slabs == DEFAULT_PARTITION else (
+            "quadtree" if num_slabs is None else f"slabs({num_slabs})")
+        label = f"{label} {cut}"
     print(f"shapes={shapes} frames={frames} dt={dt} mode={mode} detect={detect} "
-          f"runs={runs} spawn_frames={spawn_frames}")
+          f"runs={runs} spawn_frames={spawn_frames} seed={seed} [{label}]")
 
     all_rows = []
     mean_ms_values = []
@@ -234,10 +277,17 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
     for run_index in range(runs):
         # only the first run captures snapshots so we do not overwrite them
         frames_to_snap = snapshot_frames if run_index == 0 else ()
+        # reseed per run so runs differ yet the whole sweep is reproducible
         rows, mean_ms, body_count = simulate(shapes, frames, dt, mode, detect, report,
-                                             spawn_frames, frames_to_snap, snapshot_dir)
+                                             spawn_frames, seed + run_index,
+                                             frames_to_snap, snapshot_dir,
+                                             parallel, workers, run_index * UID_STRIDE,
+                                             num_slabs)
         mean_ms_values.append(mean_ms)
         all_rows.append(rows)
+
+    if parallel:
+        wait()
 
     print(f"\n{'frame':>6} {'ms/frame':>16} {'kinetic':>22} {'penetration':>20}")
     for i in range(len(all_rows[0])):
@@ -265,6 +315,8 @@ def main():
     parser.add_argument("--detect", default="quadtree", choices=["quadtree", "basic"])
     parser.add_argument("--report", type=int, default=30, help="Frames between report lines")
     parser.add_argument("--runs", type=int, default=3, help="Number of runs to average over")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Seed for the Matrix PRNG; reproduces the same spawns")
     parser.add_argument("--spawn-frames", type=int, default=-1,
                         help="Frames over which to stream the drops (default ~70%% of --frames)")
     parser.add_argument("--snapshot", default="",
@@ -274,17 +326,39 @@ def main():
     parser.add_argument("--video", default="",
                         help="Render every frame and encode an mp4 at this path (needs ffmpeg)")
     parser.add_argument("--fps", type=int, default=60, help="Frame rate for --video output")
+    parser.add_argument("--parallel", action="store_true",
+                        help="Run each frame across BOC workers (drained per frame with quiesce)")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Worker count for --parallel (default: auto)")
+    parser.add_argument("--slabs", type=int, default=-1,
+                        help="Equal-population vertical slabs for --parallel (default: stepper default)")
+    parser.add_argument("--quadtree-cut", action="store_true",
+                        help="Use the loose-quadtree partition fallback for --parallel")
     args = parser.parse_args()
 
     spawn_frames = args.spawn_frames if args.spawn_frames >= 0 else int(args.frames * 0.7)
+    if args.slabs != -1 and args.slabs < 1:
+        parser.error("--slabs must be >= 1")
+    if args.quadtree_cut and args.slabs >= 1:
+        parser.error("pass at most one of --quadtree-cut and --slabs")
+
+    num_slabs = DEFAULT_PARTITION
+    if args.quadtree_cut:
+        num_slabs = None
+    elif args.slabs >= 1:
+        num_slabs = args.slabs
     if args.video:
+        if args.parallel:
+            parser.error("--video renders the serial engine; not supported with --parallel")
+
         record_video(args.shapes, args.frames, args.dt, args.mode, args.detect,
-                     spawn_frames, args.video, args.fps)
+                     spawn_frames, args.video, args.fps, args.seed)
         return
 
     snapshot_frames = frozenset(int(f) for f in args.snapshot.split(",") if f.strip())
     run(args.shapes, args.frames, args.dt, args.mode, args.detect, args.report,
-        args.runs, spawn_frames, snapshot_frames, args.snapshot_dir)
+        args.runs, spawn_frames, args.seed, snapshot_frames, args.snapshot_dir,
+        args.parallel, args.workers, num_slabs)
 
 
 if __name__ == "__main__":

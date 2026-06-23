@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name =  "bocphysics"
-version = "0.2"
+version = "0.3"
 authors = [
     { name="Matthew Johnson", email="mj293@cam.ac.uk" },
 ]
 description = "2D rigid body physical simulation using boc"
 dependencies = [
-    "bocpy",
+    "bocpy==0.12.0",
     "pyglet",
     "webcolors"
 ]

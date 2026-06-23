@@ -71,3 +71,11 @@ def test_sweep_contains_original_and_moved_box():
                  box.right + displacement.x, box.bottom + displacement.y)
     assert swept.contains(box)
     assert swept.contains(moved)
+
+
+def test_constructed_bodies_have_no_uid():
+    # uid identity is stamped by the engine in add_body, not the factory
+    circle = Circle.create(1.5, 2.0, (10, 20, 30))
+    polygon = Polygon.create_rectangle(2.0, 2.0, 2.0, (10, 20, 30))
+    assert circle.uid is None
+    assert polygon.uid is None
