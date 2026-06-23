@@ -3,16 +3,12 @@
 from typing import List, Set, Tuple
 
 from bocpy import Matrix
-from pyglet import shapes
-from pyglet.graphics import Batch
 
+from . import solver
 from .bodies import AABB, RigidBody
-from .collisions import detect_collision
 from .config import DetectionKind, PhysicsMode
-from .contacts import find_contact_points
 from .detection import Detection
 from .physics import Physics
-from .render import BLACK, Camera, YELLOW
 
 
 ZERO_VEC = Matrix.vector([0, 0])
@@ -59,7 +55,7 @@ class PhysicsEngine:
                  mode: PhysicsMode, detection_kind: DetectionKind,
                  show_contacts: bool, height_in_meters=30,
                  substep_solver=True, num_substeps=4,
-                 num_velocity_iterations=5):
+                 num_velocity_iterations=10):
         """Create the engine from the window size, physics mode, and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
@@ -73,6 +69,8 @@ class PhysicsEngine:
         self.gravity = Matrix.vector([0, 9.81])
         self.collisions: List[Tuple[RigidBody, RigidBody]] = []
         self.to_remove: List[RigidBody] = []
+        # monotonic identity stamped on each body in add_body, stable across frames
+        self.next_uid = 0
         self.center = Matrix.vector([self.width / 2, self.height / 2])
         self.contacts: Set[Tuple[float, float]] = set()
         self.show_contacts = show_contacts
@@ -89,7 +87,7 @@ class PhysicsEngine:
                         "linear_velocity", "angular_velocity",
                         "mass", "inertia"],
             "collision": ["aabb"],
-            "render": ["draw"]
+            "render": ["position", "color"]
         }
 
     def remove_outside(self):
@@ -175,29 +173,20 @@ class PhysicsEngine:
             geometry-only half of the narrow phase. Returns None for a false
             positive, otherwise the tuple the impulse solver iterates over.
         """
-        collision = detect_collision(a, b)
-        if collision is None:
-            # false positive
-            return None
-
-        c0, c1 = find_contact_points(a, b, collision)
-        if self.show_contacts:
-            self.contacts.add((c0.x, c0.y))
-            if c1 is not None:
-                self.contacts.add((c1.x, c1.y))
-
-        return (a, b, collision, c0, c1)
+        return solver.build_manifold(a, b, self.contacts if self.show_contacts else None)
 
     def resolve_pair(self, a: RigidBody, b: RigidBody):
         """Detect and resolve a contact between one candidate pair of bodies.
 
         Description:
             This is the narrow phase for a single pair: it confirms the exact
-            collision, generates contact points, and passes them to the
-            physics module for impulse resolution.
+            collision and generates contact points (a pure build), pushes the
+            bodies apart for penetration recovery, then passes the manifold to
+            the physics module for impulse resolution.
         """
         manifold = self.build_manifold(a, b)
         if manifold is not None:
+            solver.separate_manifold(manifold)
             self.physics.resolve_collision(*manifold)
 
     def solve_island(self, island: Island, dt: float, num_iterations: int):
@@ -218,21 +207,13 @@ class PhysicsEngine:
             contact manifold once, since the geometry barely moves within a
             sub-step. The velocity solver then iterates over those cached
             manifolds, converging the coupled contacts without paying the
-            narrow-phase cost again.
+            narrow-phase cost again. The work is delegated to the shared
+            solver core so the parallel path runs the identical solve.
         """
-        for _ in range(num_substeps):
-            for body in island.bodies:
-                body.step(sub_dt, self.gravity)
-
-            manifolds = []
-            for a, b in island.pairs:
-                manifold = self.build_manifold(a, b)
-                if manifold is not None:
-                    manifolds.append(manifold)
-
-            for _ in range(num_velocity_iterations):
-                for manifold in manifolds:
-                    self.physics.resolve_collision(*manifold)
+        contacts = self.contacts if self.show_contacts else None
+        solver.solve_group_substep(self.physics, island.bodies, island.pairs,
+                                   self.gravity, sub_dt, num_substeps,
+                                   num_velocity_iterations, contacts)
 
     def step(self, dt: float, num_iterations=20):
         """Advances the simulation by a time step.
@@ -269,20 +250,6 @@ class PhysicsEngine:
 
         self.remove_outside()
 
-    def draw(self, batch: Batch, project: Camera) -> list:
-        """Draws the simulation into the batch, returning shapes to keep alive."""
-        kept = []
-        for body in self.bodies:
-            if body.render:
-                kept.extend(body.draw(batch, project))
-
-        for contact in self.contacts:
-            x, y = project(Matrix.vector([contact[0], contact[1]]))
-            kept.append(shapes.Circle(x, y, 5, color=YELLOW, batch=batch))
-            kept.append(shapes.Arc(x, y, 5, thickness=2, color=BLACK, batch=batch))
-
-        return kept
-
     def add_body(self, body: RigidBody):
         """Adds a body to the simulation."""
         for system, components in self.systems.items():
@@ -291,6 +258,9 @@ class PhysicsEngine:
             has_system = all(hasattr(body, component) for component in components)
             setattr(body, system, has_system)
 
+        # stamp a stable identity so the parallel path can scatter results by uid
+        body.uid = self.next_uid
+        self.next_uid += 1
         self.bodies.append(body)
 
     def remove_body(self, body: RigidBody):

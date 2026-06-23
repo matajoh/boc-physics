@@ -8,37 +8,52 @@ from .bodies import Circle, Polygon, RigidBody
 from .collisions import Collision
 
 
-def points_segment_distances(points: Matrix, a: Matrix, b: Matrix) -> list:
-    """Find the squared distances from every point in a block to one segment.
+def edge_point_distances(edges: Matrix, points: Matrix) -> Matrix:
+    """Find the squared distance from every point to every edge as an (E x P) block.
 
     Description:
-        The projection parameter, the clamp onto the segment, and the residual
-        are all computed once over the whole (N x 2) point block rather than per
-        point. Clipping the parameter to [0, 1] clamps the foot of the
-        projection to the segment's endpoints.
+        One batched pass replaces the per-edge projection loop. The point-to-
+        segment squared distance is expanded algebraically so the whole
+        (edges x points) grid falls out of 2D matrix products: project every
+        point onto every edge direction, clamp the foot to the segment, and read
+        the residual. The (E x P) matmul term leads each broadcast so the point
+        row vector and the edge column vector fold in without a temporary.
     """
-    ab = b - a
-    t = (points - a).vecdot(ab, axis=1) / ab.vecdot(ab)
-    # t @ ab is the outer product scaling ab per row, so closest is an (N x 2) block
-    closest = a + t.clip(0, 1) @ ab
-    return list((points - closest).magnitude_squared(axis=1))
+    rows = edges.rows
+    v0 = edges
+    v1 = edges[[(i + 1) % rows for i in range(rows)]]
+    ab = v1 - v0
+    length2 = ab.magnitude_squared(axis=1)
+    pt = points.T
+    # proj is (p - v0) . ab for every (edge, point) pair; the clamp gives the foot
+    proj = ab @ pt - v0.vecdot(ab, axis=1)
+    t = (proj / length2).clip(0, 1)
+    # |p - v0|^2 expanded so the closest-point residual stays a pure 2D expression
+    q2 = (v0 @ pt) * -2 + points.magnitude_squared(axis=1).T + v0.magnitude_squared(axis=1)
+    return q2 - t * proj * 2 + t * t * length2
 
 
-def scan_edge_points(points: Matrix, distances: list, tol: float, state: list):
+def scan_edge_points(points: Matrix, distances: list, tol: float, state: list,
+                     source_uid):
     """Fold one edge's point distances into the running closest-point manifold.
 
     Description:
-        state is [min_dist, closest0, closest1]. Points within tol of the
-        running minimum form a two-point manifold; a strictly closer point
-        resets it. This mirrors the original sequential scan exactly.
+        state is [min_dist, closest0, closest1, id0, id1]. Points within tol of
+        the running minimum form a two-point manifold; a strictly closer point
+        resets it. The point assignment mirrors the original sequential scan
+        exactly; the feature IDs (source_uid, vertex_index) ride alongside and
+        never influence which point is chosen.
     """
     for i, d in enumerate(distances):
         if d < state[0] - tol:
             state[0] = d
             state[1] = points[i]
             state[2] = None
+            state[3] = (source_uid, i)
+            state[4] = None
         elif d < state[0] + tol and are_different(points[i], state[1], tol):
             state[2] = points[i]
+            state[4] = (source_uid, i)
 
 
 def are_different(a: Matrix, b: Matrix, tol: float) -> bool:
@@ -46,25 +61,34 @@ def are_different(a: Matrix, b: Matrix, tol: float) -> bool:
     return abs(a.x - b.x) > tol or abs(a.y - b.y) > tol
 
 
-def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> Tuple[Matrix, None]:
-    """Find the contact points between two polygons."""
+def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> Tuple:
+    """Find the contact points between two polygons, with feature IDs.
+
+    Description:
+        Returns (closest0, closest1, id0, id1). Each contact point is a vertex
+        of one of the polygons, so its feature ID is (source_uid, vertex_index)
+        -- the natural stable identity for warm-starting. The IDs never affect
+        the points, which stay byte-identical to the pre-ID scan.
+    """
     a_verts = a.transformed_vertices
     b_verts = b.transformed_vertices
-    # state is [min_dist, closest0, closest1] shared across both edge sweeps
-    state = [float("inf"), None, None]
-    scan_polygon_edges(a_verts, b_verts, tol, state)
-    scan_polygon_edges(b_verts, a_verts, tol, state)
-    return state[1], state[2]
+    # state is [min_dist, closest0, closest1, id0, id1] shared across both sweeps
+    state = [float("inf"), None, None, None, None]
+    # contact points are vertices of the swept (points) polygon, so b then a
+    scan_polygon_edges(a_verts, b_verts, tol, state, b.uid)
+    scan_polygon_edges(b_verts, a_verts, tol, state, a.uid)
+    return state[1], state[2], state[3], state[4]
 
 
-def scan_polygon_edges(edges: Matrix, points: Matrix, tol: float, state: list):
+def scan_polygon_edges(edges: Matrix, points: Matrix, tol: float, state: list,
+                       source_uid):
     """Sweep every edge of one polygon against all of another's vertices."""
-    num_edges = edges.rows
-    for i in range(num_edges):
-        v0 = edges[i]
-        v1 = edges[(i + 1) % num_edges]
-        distances = points_segment_distances(points, v0, v1)
-        scan_edge_points(points, distances, tol, state)
+    distances = edge_point_distances(edges, points)
+    num_points = points.rows
+    for i in range(edges.rows):
+        # replay the running-min selection per edge over the pre-built distances
+        row = [distances[i, j] for j in range(num_points)]
+        scan_edge_points(points, row, tol, state, source_uid)
 
 
 def separate(a: RigidBody, b: RigidBody, collision: Collision):
@@ -83,20 +107,22 @@ def separate(a: RigidBody, b: RigidBody, collision: Collision):
 
 def find_contact_points(a: RigidBody,
                         b: RigidBody,
-                        collision: Collision) -> Tuple[Matrix, Matrix]:
-    """Find the contact points for a collision, then push the bodies apart.
+                        collision: Collision) -> Tuple:
+    """Find the contact points for a collision from the overlapping configuration.
 
     Description:
-        Contact points are computed from the overlapping configuration, before
-        any position correction, so the manifold reflects the true contact.
-        Only then are the bodies separated along the collision normal.
+        A pure geometry query with no side effects, returning (c0, c1, id0, id1).
+        The contact points are read from the current overlapping poses; each
+        carries a (source_uid, vertex_index) feature ID for warm-starting. A
+        circle contributes its single surface point with ID (circle_uid, 0).
+        Positional correction is the caller's responsibility -- call separate
+        explicitly afterwards.
     """
     if isinstance(a, Circle):
-        points = a.position + collision.normal * a.radius, None
+        points = a.position + collision.normal * a.radius, None, (a.uid, 0), None
     elif isinstance(b, Circle):
-        points = b.position - collision.normal * b.radius, None
+        points = b.position - collision.normal * b.radius, None, (b.uid, 0), None
     else:
         points = find_contact_points_polygon_polygon(a, b)
 
-    separate(a, b, collision)
     return points

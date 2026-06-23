@@ -4,6 +4,7 @@ from typing import List, Tuple
 
 from .bodies import AABB, RigidBody
 from .config import DetectionKind
+from .patches import build_partition
 from .quadtree import QuadTree
 
 
@@ -23,6 +24,8 @@ class Detection:
         match self.kind:
             case DetectionKind.QUADTREE:
                 return self.find_all_intersections_quadtree(bodies, collisions)
+            case DetectionKind.LOOSE_QUADTREE:
+                return self.find_all_intersections_loose_quadtree(bodies, collisions)
             case DetectionKind.BASIC:
                 return self.find_all_intersections_basic(bodies, collisions)
             case _:
@@ -36,6 +39,27 @@ class Detection:
                 quadtree.add(body)
 
         quadtree.find_all_intersections(collisions)
+
+    def find_all_intersections_loose_quadtree(self, bodies: List[RigidBody],
+                                              collisions: Collisions):
+        """Find colliding pairs, then route them through the loose partition.
+
+        Description:
+            The candidate pairs come from the quadtree so none are missed, but
+            they are then classified into patches and re-emitted as interior,
+            boundary, and dynamic-static work. This exercises the partition the
+            parallel solver depends on while keeping the serial path selectable
+            and testable without any concurrency. Static-static pairs, which
+            resolve to a no-op, are dropped by the partition.
+        """
+        candidates: Collisions = []
+        self.find_all_intersections_quadtree(bodies, candidates)
+        partition = build_partition(bodies, candidates, self.box)
+        for patch in partition.patches:
+            collisions.extend(patch.interior_pairs)
+
+        for boundary in partition.boundary_pairs:
+            collisions.append(boundary.pair)
 
     def find_all_intersections_basic(self, bodies: List[RigidBody], collisions: Collisions):
         """Find all colliding pairs with a brute-force pairwise scan."""

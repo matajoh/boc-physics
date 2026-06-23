@@ -35,6 +35,11 @@ class PhysicsMode(Enum):
     ROTATION = auto()
     FRICTION = auto()
 
+    @property
+    def is_contact_mode(self) -> bool:
+        """True for the modes that cache per-contact data and the batched kernel solves."""
+        return self in (PhysicsMode.ROTATION, PhysicsMode.FRICTION)
+
 
 class DetectionKind(Enum):
     """The broad-phase collision-detection algorithm to use."""
@@ -42,3 +47,4 @@ class DetectionKind(Enum):
     BASIC = 1
     SPATIAL_HASHING = 2
     QUADTREE = 3
+    LOOSE_QUADTREE = 4
