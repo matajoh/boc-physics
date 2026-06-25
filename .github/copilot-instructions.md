@@ -206,6 +206,12 @@ For non-trivial design work (multi-subsystem changes, architecture
 decisions), use **multi-perspective-plan** to draft and stress-test the plan
 with competing lens subagents before any code is written.
 
+When wrapping up a change, run **finalize-pr**, which includes an
+**editor-lens** pass (the `editor-lens` agent in `.github/agents/`) that trims
+comment debt over the diff and sweeps user-facing docs for leaked internal
+review references. The editor-lens can also be run standalone via
+**review-loop** to clean up comment debt in any target.
+
 Other skills available in `.github/skills/`:
 
 - **thinking-in-boc** — the BOC mental model. Read this any time you catch

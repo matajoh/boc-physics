@@ -23,7 +23,7 @@ from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
 
 SETTLE_FRAMES = 120
-UID_BASE = 1_000_000  # disjoint, high uid base: the worker shell cache is keyed by uid
+UID_BASE = 1_000_000
 SEEDS = [7, 20260608, 99]
 
 

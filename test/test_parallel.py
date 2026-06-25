@@ -23,14 +23,10 @@ from bocphysics.physics import Physics
 
 GRAVITY = Matrix.vector([0, 9.81])
 SUB_DT = (1 / 60) / 4
-NUM_SUBSTEPS = 4  # pairs with SUB_DT: a full frame is NUM_SUBSTEPS sub-steps of SUB_DT
-# must match the engine's num_velocity_iterations default: ParallelStepper.begin
-# reseeds CONFIG_KEY from the engine, and notice_seed is last-write-wins, so a
-# mismatch lets a begin-based test pollute CONFIG_KEY for the direct-schedule tests
+NUM_SUBSTEPS = 4
 NUM_VEL = 10
 SEEDS = list(range(12))
 
-# module-global monotonic uid source: shell_cache assumes uids are never reused
 _next_uid = 0
 
 
@@ -368,7 +364,6 @@ def test_colored_seam_order_separates_patch_sharing_seams(seed):
     order = parallel.colored_seam_order(list(keys), num_patches)
     colors = seam_colors(order, num_patches)
 
-    # within one colour every patch index appears at most once
     by_color = {}
     for (i, j) in order:
         by_color.setdefault(colors[(i, j)], []).append((i, j))
@@ -376,7 +371,6 @@ def test_colored_seam_order_separates_patch_sharing_seams(seed):
         patches = [p for key in batch for p in key]
         assert len(patches) == len(set(patches))
 
-    # emission is grouped by non-decreasing colour
     seen_colors = [colors[k] for k in order]
     assert seen_colors == sorted(seen_colors)
 
@@ -432,11 +426,10 @@ def settle_parallel(seed):
 
     Description:
         Uses ParallelStepper with no partition override, so it exercises the
-        promoted default -- the equal-population vertical-slab cut (Gate G3).
+        default -- the equal-population vertical-slab cut.
     """
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
-    # disjoint uid base: the worker shell cache is keyed by uid, never reused
     engine.next_uid = allocate_uids(64)[0]
     build_settle_scene(engine, seed)
     stepper = parallel.ParallelStepper(engine)
@@ -454,7 +447,7 @@ def test_parallel_settles_like_serial(seed):
 
     Description:
         The parallel solve is a cown-ordered linearization, not the serial sweep,
-        so it is NOT bit-identical to the serial result (D1, A7). It is, however,
+        so it is NOT bit-identical to the serial result. It is, however,
         deterministic in its own right -- reproducible run to run and worker-count
         independent (locked by test_worker_count). It must still agree with serial
         on the physics: the same bodies survive, none tunnels the floor, the pile
@@ -465,13 +458,10 @@ def test_parallel_settles_like_serial(seed):
     fanned = settle_parallel(seed)
 
     assert len(fanned) == len(reference)
-    # the floor spans y in [9, 11]; no body may sink through it
     assert all(body.position.y < 11 for body in fanned)
-    # both linearizations shed energy to rest; parallel never runs away
     ref_speed = max(body.linear_velocity.magnitude() for body in reference)
     par_speed = max(body.linear_velocity.magnitude() for body in fanned)
     assert par_speed <= ref_speed + 1.0
-    # the two reach the same coarse pile height
     ref_top = min(body.position.y for body in reference)
     par_top = min(body.position.y for body in fanned)
     assert par_top == pytest.approx(ref_top, abs=2.0)
@@ -501,7 +491,7 @@ def test_slab_stepper_settles_like_serial(seed, num_slabs):
         Selecting num_slabs swaps the loose-quadtree cut for equal-population
         vertical slabs but reuses the identical intra, colour-ordered seam, and
         writeback machinery, so it is another cown-ordered linearization (not
-        bit-identical to serial, D1). It must still agree with serial on the
+        bit-identical to serial). It must still agree with serial on the
         physics: the same bodies survive, none tunnels the floor, the pile
         reaches the same coarse height, and the system sheds the same energy.
         Swept over K=1 (one patch, no seams), a mid count, and K large enough to
@@ -531,7 +521,7 @@ def test_slab_count_below_one_is_rejected(num_slabs):
 
 
 def test_default_partition_is_slabs():
-    """The promoted default is the equal-population slab cut, not the quadtree."""
+    """The default partition is the equal-population slab cut, not the quadtree."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
     assert parallel.ParallelStepper(engine).num_slabs == parallel.DEFAULT_SLABS
@@ -558,8 +548,8 @@ def test_quadtree_fallback_settles_like_serial(seed):
     """The retained loose-quadtree fallback still settles to the serial invariants.
 
     Description:
-        Promotion made slabs the default, but num_slabs=None keeps the Phase 5
-        quadtree cut reachable; this guards that fallback against rot. Same
+        Slabs are the default, but num_slabs=None keeps the loose-quadtree
+        cut reachable; this guards that fallback against rot. Same
         invariant-parity checks as the default and slab settle tests: bodies
         survive, none tunnels the floor, the pile reaches the same coarse height,
         and the system sheds the same kinetic energy.
@@ -601,7 +591,6 @@ def build_two_patch_scene(seed):
     floor = make_static_floor(uids[-1])
     interior_a = interior_pairs_with_floor(dyn_a, floor)
     interior_b = interior_pairs_with_floor(dyn_b, floor)
-    # endpoint order (A-uid, B-uid) so the seam normal is never flipped
     seam = [(dyn_a[0].uid, dyn_b[0].uid)]
     geom = geometry.build_geometry(dyn_a + dyn_b + [floor])
     return dyn_a, dyn_b, floor, interior_a, interior_b, seam, geom
@@ -675,7 +664,6 @@ def test_multistep_two_patch_matches_serial(seed):
     """
     dyn_a, dyn_b, floor, interior_a, interior_b, seam, geom = build_two_patch_scene(seed)
     notice_seed(parallel.GEOMETRY_KEY, geom)
-    # snapshot the shared initial state into the cowns before the serial run mutates the bodies
     state_a = Cown(transport.pack_state(dyn_a))
     state_b = Cown(transport.pack_state(dyn_b))
     pairs_a = Cown(transport.pack_pairs(interior_a))
@@ -753,7 +741,7 @@ def test_seam_decomposition_suppresses_restitution_above_threshold():
     """The parallel seam order strips the restitution bounce a serial solve keeps.
 
     Description:
-        Characterisation lock for Chunk-4 M1, not an endorsement. For a body
+        Characterisation lock, not an endorsement. For a body
         crossing a seam above the restitution threshold, the monolithic serial
         order applies a real bounce while the decomposed (intra-then-seam) order
         samples the restitution target after the interior solve has damped the
@@ -762,7 +750,6 @@ def test_seam_decomposition_suppresses_restitution_above_threshold():
     """
     physics = Physics(PhysicsMode.FRICTION, restitution=0.5, restitution_threshold=1.0)
 
-    # well above the threshold: monolithic bounces, decomposed does not
     mono, deco = seam_outcomes(physics, drop_speed=4.0)
     assert mono > 1.0, "serial order should apply a restitution bounce at the seam"
     assert abs(deco) < 0.1, "decomposed order suppresses the seam restitution"

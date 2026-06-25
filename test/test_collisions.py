@@ -1,4 +1,4 @@
-"""Bit-exact parity tests for the batched narrow phase (Thread 5.5-A).
+"""Bit-exact parity tests for the batched narrow phase.
 
 The separating-axis test now projects every vertex onto every candidate axis in
 one batched matmul instead of looping axis by axis. These tests pin the batched

@@ -12,9 +12,8 @@ Description:
     so it can resolve it without reaching across a seam. The patches tile the
     world and exchange only a thin halo of replicated statics, mirroring the
     domain-decomposition "patch + halo" pattern used in parallel physics
-    solvers, and
-    the name patch is used deliberately rather than region, which has a
-    distinct meaning in the Behavior-Oriented Concurrency literature.
+    solvers. The name patch is used deliberately rather than region, which has
+    a distinct meaning in the Behavior-Oriented Concurrency literature.
 """
 
 from typing import Dict, List, Tuple
@@ -62,7 +61,7 @@ def route_pairs(patches: List[Patch], patch_of: Dict[int, int],
         computed differs (quadtree cell vs slab bin), the routing is identical.
         Dynamic-dynamic pairs become interior or boundary work, dynamic-static
         contacts attach to the dynamic body's patch, and static-static pairs are
-        dropped, exactly as the serial island builder drops them. Endpoint order
+        dropped, exactly as the serial engine drops them. Endpoint order
         is preserved throughout so a contact normal is never flipped.
     """
     boundary_pairs: List[BoundaryPair] = []
@@ -77,7 +76,6 @@ def route_pairs(patches: List[Patch], patch_of: Dict[int, int],
         elif a.physics or b.physics:
             dynamic = a if a.physics else b
             patches[patch_of[dynamic.uid]].interior_pairs.append((a, b))
-        # both static: dropped, matching the serial island builder
 
     return Partition(patches, boundary_pairs)
 
@@ -143,3 +141,23 @@ def build_slab_partition(bodies: List[RigidBody], collisions: List[Pair],
         patches[index].bodies.append(body)
 
     return route_pairs(patches, patch_of, collisions)
+
+
+def slab_boundaries(partition: Partition) -> List[float]:
+    """Return the x of each seam between adjacent slab patches, for visualisation.
+
+    Description:
+        A slab cut is data-defined: the seam between two slabs sits between the
+        rightmost body of the left slab and the leftmost body of the right one.
+        Patches are ordered left to right, and the midpoint of that gap is the
+        boundary line the overlay draws. Empty patches and the single-slab case
+        yield no seams.
+    """
+    populated = [patch for patch in partition.patches if patch.bodies]
+    populated.sort(key=lambda patch: min(body.position.x for body in patch.bodies))
+    boundaries = []
+    for left, right in zip(populated, populated[1:]):
+        max_left = max(body.position.x for body in left.bodies)
+        min_right = min(body.position.x for body in right.bodies)
+        boundaries.append((max_left + min_right) / 2)
+    return boundaries

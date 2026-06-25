@@ -24,8 +24,7 @@ FRAME = 1 / 60
 def make_engine() -> PhysicsEngine:
     """Create a windowless substep engine with friction physics."""
     return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                         DetectionKind.QUADTREE, show_contacts=False,
-                         substep_solver=True)
+                         DetectionKind.QUADTREE, show_contacts=False)
 
 
 def overlapping_box_pair(rng: random.Random):
@@ -62,10 +61,8 @@ def test_feature_id_names_the_incident_vertex():
             uid, idx = fid
             source = by_uid[uid]
             vertex = source.transformed_vertices[idx]
-            # the contact point is exactly the named incident vertex
             assert point.x == vertex.x and point.y == vertex.y
             checked += 1
-    # the fuzz actually exercised contacts, not just disjoint configs
     assert checked > 0
 
 
@@ -84,7 +81,6 @@ def test_feature_id_is_well_formed():
             source = a if uid == a.uid else b
             assert 0 <= idx < source.transformed_vertices.rows
         if len(ids) == 2:
-            # a two-point manifold names two distinct features
             assert ids[0] != ids[1]
 
 
@@ -150,10 +146,8 @@ def test_feature_ids_are_stable_across_a_settling_pile():
                     churned += 1
         previous = current
 
-    # the settled pile actually has persistent resting contacts to track
     assert persistent > 0
     churn_rate = churned / persistent
-    # warm-start only needs low churn, not zero; this records the rate
     assert churn_rate < 0.1, f"feature-ID churn rate too high: {churn_rate:.4f}"
 
 

@@ -19,21 +19,20 @@ import time
 
 from bocpy import Matrix, quiesce, wait
 
+from bocphysics import solver
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.parallel import ParallelStepper
 from bocphysics.scene import OPEN_BOX
 
-# disjoint uid range per run: the worker shell cache is keyed by uid and assumes
-# uids are never reused, but each run rebuilds the engine and restarts uids at 0
 UID_STRIDE = 100_000
 
 
-# sentinel for "use the ParallelStepper default partition" (now equal-pop slabs)
 DEFAULT_PARTITION = "default"
 
 
+# These spawn helpers mirror tutorial_figures.py on purpose, keeping each bench a standalone script.
 def rand_int(low: int, high: int) -> int:
     """Return an integer in [low, high] inclusive from the seeded Matrix PRNG."""
     return min(high, int(Matrix.uniform(low, high + 1)))
@@ -42,7 +41,6 @@ def rand_int(low: int, high: int) -> int:
 def spawn_one(engine):
     """Drop a single randomly-shaped, randomly-rotated body high above the floor."""
     x = Matrix.uniform(-11, 11)
-    # the world is y-down with the floor near y=10, so small y is high up
     y = Matrix.uniform(-13, -7)
     angle = Matrix.uniform(0, 2 * math.pi)
     color = (rand_int(40, 255), rand_int(40, 255), rand_int(40, 255))
@@ -65,7 +63,6 @@ def make_spawn_schedule(shapes: int, frames: int, spawn_frames: int):
     if shapes <= 0:
         return schedule
 
-    # a window of 0 means drop everything at once on the first frame
     window = min(max(spawn_frames, 1), frames)
     for i in range(shapes):
         schedule[1 + i * window // shapes] += 1
@@ -108,27 +105,21 @@ def save_snapshot(window, engine, camera, path: str):
     """Render the current engine state into the window and save it as a PNG."""
     import pyglet
 
+    from bocphysics.render import draw_frame, draw_static_layer
+
     window.switch_to()
     window.clear()
+    static_batch = pyglet.graphics.Batch()
+    statics = [body for body in engine.bodies if body.render and not body.physics]
+    static_kept = draw_static_layer(statics, static_batch, camera)
+    static_batch.draw()
     batch = pyglet.graphics.Batch()
-    kept = engine.draw(batch, camera)
+    dynamics = [body for body in engine.bodies if body.render and body.physics]
+    kept = draw_frame(dynamics, engine.contacts, batch, camera)
     batch.draw()
     buffer = pyglet.image.get_buffer_manager().get_color_buffer()
     buffer.save(path)
-    return kept
-
-
-def open_encoder(path: str, width: int, height: int, fps: int):
-    """Start an ffmpeg subprocess that consumes raw RGBA frames over stdin."""
-    import subprocess
-
-    return subprocess.Popen(
-        ["ffmpeg", "-y", "-loglevel", "warning",
-         "-f", "rawvideo", "-pix_fmt", "rgba",
-         "-s", f"{width}x{height}", "-r", str(fps),
-         "-i", "-", "-vf", "vflip",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", path],
-        stdin=subprocess.PIPE)
+    return static_kept, kept
 
 
 def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
@@ -137,6 +128,7 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
     import pyglet
 
     from bocphysics.engine import PhysicsEngine
+    from bocphysics.render import open_encoder
 
     Matrix.seed(seed)
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
@@ -150,7 +142,6 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
     pyglet.gl.glClearColor(1, 1, 1, 1)
     camera = make_camera(engine)
 
-    # query the real framebuffer size, which can differ from the window on HiDPI
     window.switch_to()
     window.clear()
     buffer = pyglet.image.get_buffer_manager().get_color_buffer()
@@ -195,8 +186,6 @@ def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report
     Matrix.seed(seed)
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
                            DetectionKind[detect.upper()], show_contacts=False)
-    # a disjoint uid base keeps this run's bodies from colliding with a prior
-    # run's per-interpreter shell cache (uids are assumed never reused)
     engine.next_uid = uid_base
     for body in OPEN_BOX.build():
         engine.add_body(body)
@@ -227,7 +216,6 @@ def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report
 
         start = time.perf_counter()
         if stepper is not None:
-            # one parallel frame: schedule the fan-out, then drain it to completion
             if stepper.step():
                 quiesce(30.0)
         else:
@@ -268,6 +256,7 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
         cut = "slabs(default)" if num_slabs == DEFAULT_PARTITION else (
             "quadtree" if num_slabs is None else f"slabs({num_slabs})")
         label = f"{label} {cut}"
+    label = f"{label} {'batched' if solver.use_batched_solver else 'scalar'}"
     print(f"shapes={shapes} frames={frames} dt={dt} mode={mode} detect={detect} "
           f"runs={runs} spawn_frames={spawn_frames} seed={seed} [{label}]")
 
@@ -275,9 +264,7 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
     mean_ms_values = []
     body_count = 0
     for run_index in range(runs):
-        # only the first run captures snapshots so we do not overwrite them
         frames_to_snap = snapshot_frames if run_index == 0 else ()
-        # reseed per run so runs differ yet the whole sweep is reproducible
         rows, mean_ms, body_count = simulate(shapes, frames, dt, mode, detect, report,
                                              spawn_frames, seed + run_index,
                                              frames_to_snap, snapshot_dir,
@@ -334,7 +321,12 @@ def main():
                         help="Equal-population vertical slabs for --parallel (default: stepper default)")
     parser.add_argument("--quadtree-cut", action="store_true",
                         help="Use the loose-quadtree partition fallback for --parallel")
+    parser.add_argument("--batched", action="store_true",
+                        help="Use the colour-batched velocity kernel (serial and parallel paths)")
     args = parser.parse_args()
+
+    # Snapshotted by ParallelStepper.begin(); must be set before the engine starts stepping.
+    solver.use_batched_solver = args.batched
 
     spawn_frames = args.spawn_frames if args.spawn_frames >= 0 else int(args.frames * 0.7)
     if args.slabs != -1 and args.slabs < 1:

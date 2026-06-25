@@ -40,7 +40,6 @@ def test_separate_removes_the_full_penetration():
 
     separate(box, floor, Collision(UP, depth))
 
-    # the static floor stays put, so the dynamic box absorbs the whole overlap
     assert abs((before - box.position.y) - depth) < 1e-9
 
 
@@ -54,7 +53,6 @@ def test_separate_splits_correction_between_two_dynamic_bodies():
 
     separate(upper, lower, Collision(UP, depth))
 
-    # two dynamic bodies share the correction equally
     half = depth * 0.5
     assert abs((8.5 - upper.position.y) - half) < 1e-9
     assert abs((lower.position.y - 10.0) - half) < 1e-9
@@ -70,7 +68,6 @@ def test_separate_refreshes_the_transformed_vertices_cache():
 
     separate(box, floor, Collision(UP, 0.5))
 
-    # separating through move() marks the cache dirty, so vertices follow the body
     assert abs((before - box.transformed_vertices[0].y) - 0.5) < 1e-9
 
 
@@ -84,7 +81,6 @@ def test_single_separation_resolves_a_static_contact():
     collision = detect_collision(box, floor)
     separate(box, floor, collision)
 
-    # full projection clears the whole overlap in a single call
     residual = detect_collision(box, floor)
     assert residual is None or residual.depth < 1e-6
 
@@ -99,9 +95,7 @@ def test_find_contact_points_is_pure_and_takes_overlapping_config():
 
     contact0, _, _, _ = find_contact_points(box, floor, collision)
 
-    # the manifold reflects the overlapping config: the box top corner at y=9.5
     assert abs(contact0.y - 9.5) < 1e-6
-    # the query is pure: it does NOT move the bodies, so the overlap is unchanged
     residual = detect_collision(box, floor)
     assert residual is not None and abs(residual.depth - collision.depth) < 1e-9
 
@@ -118,23 +112,19 @@ def test_resting_box_does_not_sink_through_floor():
 
     collision = detect_collision(box, floor)
     depth = 0.0 if collision is None else collision.depth
-    # at rest the penetration stays bounded near the slop, not growing
     assert depth < 0.1
-    # the box settles roughly one half-height above the floor top (y=9)
     assert 7.5 < box.position.y < 8.2
 
 
 def test_restitution_for_applies_above_threshold():
     """A fast closing contact gets the full restitution coefficient."""
     physics = Physics(PhysicsMode.FRICTION)
-    # closing at 3 m/s (> 1 m/s threshold) bounces with full restitution
     assert physics.restitution_for(-3.0) == 0.5
 
 
 def test_restitution_for_zero_below_threshold():
     """A resting contact below the threshold gets zero restitution."""
     physics = Physics(PhysicsMode.FRICTION)
-    # closing at 0.5 m/s (< 1 m/s threshold) settles instead of bouncing
     assert physics.restitution_for(-0.5) == 0.0
 
 
@@ -143,7 +133,6 @@ def test_restitution_bias_applies_on_fast_impact():
     physics = Physics(PhysicsMode.FRICTION)
     a = make_moving_body(0.0)
     b = make_moving_body(-3.0)
-    # vn0 = -3 m/s; target = -0.5 * -3 = 1.5 m/s of bounce-back
     bias = physics.restitution_bias(a, b, UP, ZERO_VEC, ZERO_VEC)
     assert bias == pytest.approx(1.5)
 
@@ -153,7 +142,6 @@ def test_restitution_bias_zero_for_resting_contact():
     physics = Physics(PhysicsMode.FRICTION)
     a = make_moving_body(0.0)
     b = make_moving_body(-0.5)
-    # closing at 0.5 m/s is below the 1 m/s threshold, so the target is zero
     assert physics.restitution_bias(a, b, UP, ZERO_VEC, ZERO_VEC) == 0.0
 
 
@@ -162,7 +150,6 @@ def test_restitution_bias_zero_for_separating_contact():
     physics = Physics(PhysicsMode.FRICTION)
     a = make_moving_body(0.0)
     b = make_moving_body(2.0)
-    # the bodies are moving apart, so there is nothing to bounce
     assert physics.restitution_bias(a, b, UP, ZERO_VEC, ZERO_VEC) == 0.0
 
 
@@ -188,14 +175,12 @@ def test_apply_accumulated_releases_earlier_overpush():
     physics = Physics(PhysicsMode.FRICTION)
     constraint, _upper, _lower = make_two_box_constraint(
         physics, (0.0, -2.0), 0.0, (0.0, 1.0), 0.0)
-    # seed each contact as if a prior sweep over-pushed; bodies now separate
     lam_n = [5.0, 5.0]
     lam_t = [0.0, 0.0]
     tangent_data = solver.build_tangent_data(constraint)
 
     physics.apply_accumulated(constraint, lam_n, lam_t, tangent_data)
 
-    # accumulation lowers the running total -- impossible under per-iteration clamping
     assert 0.0 < lam_n[0] < 5.0
     assert 0.0 < lam_n[1] < 5.0
 
@@ -215,7 +200,6 @@ def test_accumulated_friction_sticks_within_static_cone():
         physics.apply_accumulated(constraint, lam_n, lam_t, tangent_data)
 
     for i in range(nc):
-        # strictly inside the static cone and non-zero -- friction is sticking
         assert 0.0 < abs(lam_t[i]) < physics.static_friction * lam_n[i]
 
 
@@ -233,7 +217,6 @@ def test_accumulated_friction_slides_capped_at_kinetic():
     physics.apply_accumulated(constraint, lam_n, lam_t, tangent_data)
 
     for i in range(nc):
-        # past the static cone -> running total pinned to the kinetic bound
         assert abs(lam_t[i]) == pytest.approx(physics.dynamic_friction * lam_n[i])
 
 
@@ -250,7 +233,6 @@ def test_accumulated_friction_zero_tangential_velocity_is_noop():
 
     physics.apply_accumulated(constraint, lam_n, lam_t, tangent_data)
 
-    # the fixed-axis friction applies ~0 at zero tangential speed without a guard
     assert lam_n[0] > 0.0
     assert lam_t == [0.0] * nc
 
@@ -269,13 +251,13 @@ def test_apply_accumulated_zero_contacts_is_noop():
     assert before == after
 
 
-def test_apply_accumulated_matches_probe_oracle():
-    """The in-engine sweep reproduces the validated probe's result bit-for-bit.
+def test_apply_accumulated_matches_reference_oracle():
+    """The in-engine sweep reproduces the captured reference result bit-for-bit.
 
-    The oracle was captured once from .copilot/pyramid_twocoef.py (the validated
-    two-coefficient probe) on this exact fixture; that scratch is gitignored, so
-    the reference lives here. A regression to point-by-point Gauss-Seidel within a
-    manifold (inline scatter) would shift these by orders of magnitude.
+    The oracle values were captured once from the two-coefficient accumulated
+    solver on this exact fixture and pinned here as the reference. A regression to
+    point-by-point Gauss-Seidel within a manifold (inline scatter) would shift
+    these by orders of magnitude.
     """
     physics = Physics(PhysicsMode.FRICTION)._replace(static_friction=0.5,
                                                      dynamic_friction=0.3)

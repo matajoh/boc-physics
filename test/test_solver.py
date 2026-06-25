@@ -8,7 +8,7 @@ import pytest
 from bocphysics import solver
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import DetectionKind, PhysicsMode
-from bocphysics.engine import Island, PhysicsEngine
+from bocphysics.engine import PhysicsEngine
 from bocphysics.physics import Constraint
 
 UP = Matrix.vector([0, 1])
@@ -60,36 +60,33 @@ def test_build_group_manifolds_keeps_dynamic_static_pair():
 
 
 def test_solver_core_matches_engine_substep():
-    """The free-function core reproduces solve_island_substep exactly."""
+    """The free-function core reproduces the engine's substep solve exactly."""
     positions = [Matrix.vector([-2, 0]), Matrix.vector([0, 0]), Matrix.vector([1.6, 0])]
 
-    def build_island():
-        """Build a small dynamic island at the fixed positions."""
+    def build_group():
+        """Build a small dynamic group at the fixed positions."""
         bodies = []
         for pos in positions:
             body = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(pos.copy())
             body.physics = True
             bodies.append(body)
 
-        island = Island()
-        island.bodies = bodies
-        island.pairs = [(bodies[0], bodies[1]), (bodies[1], bodies[2])]
-        return island
+        pairs = [(bodies[0], bodies[1]), (bodies[1], bodies[2])]
+        return bodies, pairs
 
     gravity = Matrix.vector([0, 9.81])
     sub_dt = (1 / 60) / 4
 
-    # reference: the engine method
     engine = make_engine()
-    ref = build_island()
-    engine.solve_island_substep(ref, sub_dt, 4, 5)
+    ref_bodies, ref_pairs = build_group()
+    engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
-    # candidate: the extracted core called directly
-    cand = build_island()
-    solver.solve_group_substep(engine.physics, cand.bodies, cand.pairs,
-                               gravity, sub_dt, 4, 5, None)
+    cand_bodies, cand_pairs = build_group()
+    solver.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
+                               gravity, sub_dt, engine.num_substeps,
+                               engine.num_velocity_iterations, None)
 
-    for r, c in zip(ref.bodies, cand.bodies):
+    for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x
         assert r.position.y == c.position.y
         assert r.linear_velocity.x == c.linear_velocity.x
@@ -97,32 +94,30 @@ def test_solver_core_matches_engine_substep():
         assert r.angular_velocity == c.angular_velocity
 
 
-def test_polygon_island_core_matches_engine():
+def test_polygon_group_core_matches_engine():
     """The core matches the engine for rotating polygon contacts too."""
-    def build_island():
-        """Build a two-polygon stack island."""
+    def build_group():
+        """Build a two-polygon stack group."""
         a = Polygon.create_rectangle(2.0, 2.0, 2.0, (200, 100, 50))
         b = Polygon.create_rectangle(2.0, 2.0, 2.0, (50, 100, 200))
         a.physics = b.physics = True
         a.move_to(Matrix.vector([0, 0])).rotate_to(0.2)
         b.move_to(Matrix.vector([0.5, -1.8])).rotate_to(-0.1)
-        island = Island()
-        island.bodies = [a, b]
-        island.pairs = [(a, b)]
-        return island
+        return [a, b], [(a, b)]
 
     gravity = Matrix.vector([0, 9.81])
     sub_dt = (1 / 60) / 4
 
     engine = make_engine()
-    ref = build_island()
-    engine.solve_island_substep(ref, sub_dt, 4, 5)
+    ref_bodies, ref_pairs = build_group()
+    engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
-    cand = build_island()
-    solver.solve_group_substep(engine.physics, cand.bodies, cand.pairs,
-                               gravity, sub_dt, 4, 5, None)
+    cand_bodies, cand_pairs = build_group()
+    solver.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
+                               gravity, sub_dt, engine.num_substeps,
+                               engine.num_velocity_iterations, None)
 
-    for r, c in zip(ref.bodies, cand.bodies):
+    for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x
         assert r.position.y == c.position.y
         assert r.angle == c.angle
@@ -193,7 +188,6 @@ def test_integrate_block_is_bit_exact_with_per_body_step(seed):
         assert r.linear_velocity.x == c.linear_velocity.x
         assert r.linear_velocity.y == c.linear_velocity.y
         assert r.angle == c.angle
-        # the dirty bit must invalidate the polygon transform cache identically
         assert r.update_needed_ == c.update_needed_
         if isinstance(r, Polygon):
             r.update_transform()
@@ -232,7 +226,6 @@ def test_constraint_height_sort_is_apex_first_and_stable():
 
     constraints.sort(key=solver.constraint_height)
 
-    # apex first, then the two equal-height ties in their original relative order
     assert constraints[0] is apex
     assert constraints[1] is mid_first
     assert constraints[2] is mid_second
@@ -255,5 +248,4 @@ def test_broad_phase_pair_order_is_deterministic():
     engine.detection.find_all_intersections(bodies, second)
 
     assert [(id(a), id(b)) for a, b in first] == [(id(a), id(b)) for a, b in second]
-    # the fixture is genuinely overlapping, so the order under test is non-empty
     assert first

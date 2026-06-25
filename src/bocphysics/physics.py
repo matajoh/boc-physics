@@ -68,19 +68,18 @@ class Physics(NamedTuple):
     """Class providing the physics system.
 
     Description:
-        Note that at several points in this class, we check to see if
-        a body participates in the physics system. This is because bodies
-        can participate in the collision system but not the physics system.
-        It is an immutable NamedTuple so it can ride on the noticeboard and
-        be read by every worker sub-interpreter as a shared config snapshot.
+        To navigate this type, note that a body's ``.physics`` flag gates
+        whether it receives integration and impulses: a body can take part in
+        the collision system without taking part in the physics system, so the
+        participation checks here are how the code tells those two roles apart.
+        It is an immutable NamedTuple so it can ride on the noticeboard and be
+        read by every worker sub-interpreter as a shared config snapshot.
     """
 
     mode: PhysicsMode
     restitution: float = 0.5
     static_friction: float = 0.5
     dynamic_friction: float = 0.5
-    # closing speed (m/s) below which restitution is treated as zero, so resting
-    # contacts settle instead of perpetually micro-bouncing
     restitution_threshold: float = 1.0
 
     def resolve_collision(self, a: RigidBody, b: RigidBody, collision: Collision,
@@ -170,10 +169,12 @@ class Physics(NamedTuple):
     def apply_none(self, a: RigidBody, b: RigidBody, normal: Matrix):
         """Cancel the normal component of each body's velocity."""
         if a.physics:
-            a.linear_velocity -= normal * a.linear_velocity.vecdot(normal)
+            vn = a.linear_velocity.vecdot(normal)
+            a.linear_velocity.scaled_add(-vn, normal, in_place=True)
 
         if b.physics:
-            b.linear_velocity -= normal * b.linear_velocity.vecdot(normal)
+            vn = b.linear_velocity.vecdot(normal)
+            b.linear_velocity.scaled_add(-vn, normal, in_place=True)
 
     def apply_basic(self, a: RigidBody, b: RigidBody, normal: Matrix):
         """Resolve a collision using impulses without rotation or friction."""
@@ -191,10 +192,10 @@ class Physics(NamedTuple):
         impulse = j * normal
 
         if a.physics:
-            a.linear_velocity += -impulse * a.inv_mass
+            a.linear_velocity.scaled_add(-a.inv_mass, impulse, in_place=True)
 
         if b.physics:
-            b.linear_velocity += impulse * b.inv_mass
+            b.linear_velocity.scaled_add(b.inv_mass, impulse, in_place=True)
 
     def relative_contact_velocity(self, a: RigidBody, b: RigidBody,
                                   contact: PreparedContact) -> Matrix:
@@ -203,16 +204,27 @@ class Physics(NamedTuple):
         Description:
             The single closing-velocity formula both the normal and friction
             solves read. Static bodies contribute no linear or angular term. The
-            ordering ((b terms) - (a terms)) is preserved verbatim so the extract
-            is bit-exact with the three sites it replaces.
+            ordering ((b terms) - (a terms)) is deliberate; flipping it negates
+            the closing velocity.
         """
-        linear_velocity_a = a.linear_velocity if a.physics else ZERO_VEC
-        linear_velocity_b = b.linear_velocity if b.physics else ZERO_VEC
-        angular_linear_velocity_a = contact.ra_perp * a.angular_velocity if a.physics else ZERO_VEC
-        angular_linear_velocity_b = contact.rb_perp * b.angular_velocity if b.physics else ZERO_VEC
+        # Keep term_a and term_b separate; folding them can change FP rounding and the bit-exact goldens.
+        term_b = (b.linear_velocity.scaled_add(b.angular_velocity, contact.rb_perp)
+                  if b.physics else None)
+        term_a = (a.linear_velocity.scaled_add(a.angular_velocity, contact.ra_perp)
+                  if a.physics else None)
 
-        return ((linear_velocity_b + angular_linear_velocity_b) -
-                (linear_velocity_a + angular_linear_velocity_a))
+        if term_b is None:
+            if term_a is None:
+                return ZERO_VEC
+
+            # 0 - term_a, written in place into the fresh term_a; returns -term_a.
+            return ZERO_VEC.subtract(term_a, out=term_a)
+
+        if term_a is None:
+            return term_b
+
+        term_b -= term_a
+        return term_b
 
     def solve_normal_impulses(self, a: RigidBody, b: RigidBody, normal: Matrix,
                               contacts: tuple) -> list:
@@ -227,7 +239,6 @@ class Physics(NamedTuple):
         """
         num_contacts = len(contacts)
 
-        # per-collision scratch is local so concurrent island solves never race
         j_list = [0.0] * num_contacts
         impulse_list = [ZERO_VEC] * num_contacts
         for i in range(num_contacts):
@@ -235,7 +246,6 @@ class Physics(NamedTuple):
             relative_velocity = self.relative_contact_velocity(a, b, contact)
 
             contact_velocity_mag = relative_velocity.vecdot(normal)
-            # drive the contact to its captured restitution target, never pulling
             j = (contact.v_target - contact_velocity_mag)
             j /= contact.denom
             j /= num_contacts
@@ -249,11 +259,11 @@ class Physics(NamedTuple):
             contact = contacts[i]
             impulse = impulse_list[i]
             if a.physics:
-                a.linear_velocity += -impulse * a.inv_mass
+                a.linear_velocity.scaled_add(-a.inv_mass, impulse, in_place=True)
                 a.angular_velocity += -contact.ra.cross(impulse) * a.inv_inertia
 
             if b.physics:
-                b.linear_velocity += impulse * b.inv_mass
+                b.linear_velocity.scaled_add(b.inv_mass, impulse, in_place=True)
                 b.angular_velocity += contact.rb.cross(impulse) * b.inv_inertia
 
         return j_list
@@ -286,7 +296,6 @@ class Physics(NamedTuple):
 
         j_list = self.solve_normal_impulses(a, b, normal, contacts)
 
-        # per-collision scratch is local so concurrent island solves never race
         friction_impulse_list = [ZERO_VEC] * num_contacts
 
         for i in range(num_contacts):
@@ -295,7 +304,8 @@ class Physics(NamedTuple):
 
             relative_velocity = self.relative_contact_velocity(a, b, contact)
 
-            tangent = relative_velocity - relative_velocity.vecdot(normal) * normal
+            vn = relative_velocity.vecdot(normal)
+            tangent = relative_velocity.scaled_add(-vn, normal)
 
             if tangent.magnitude_squared() < 1e-5:
                 continue
@@ -323,11 +333,11 @@ class Physics(NamedTuple):
             contact = contacts[i]
             friction_impulse = friction_impulse_list[i]
             if a.physics:
-                a.linear_velocity += -friction_impulse * a.inv_mass
+                a.linear_velocity.scaled_add(-a.inv_mass, friction_impulse, in_place=True)
                 a.angular_velocity += -contact.ra.cross(friction_impulse) * a.inv_inertia
 
             if b.physics:
-                b.linear_velocity += friction_impulse * b.inv_mass
+                b.linear_velocity.scaled_add(b.inv_mass, friction_impulse, in_place=True)
                 b.angular_velocity += contact.rb.cross(friction_impulse) * b.inv_inertia
 
     def apply_accumulated(self, constraint: Constraint, lam_n: list, lam_t: list,
@@ -357,8 +367,6 @@ class Physics(NamedTuple):
             contact = contacts[i]
             relative_velocity = self.relative_contact_velocity(a, b, contact)
             contact_velocity_mag = relative_velocity.vecdot(normal)
-            # v_target was sampled once at prepare time; the fixed point is still
-            # vn -> v_target, so restitution matches apply_friction exactly
             delta = (contact.v_target - contact_velocity_mag) / contact.denom / num_contacts
             new_total = lam_n[i] + delta
             if new_total < 0.0:
@@ -395,7 +403,6 @@ class Physics(NamedTuple):
             new_total = lam_t[i] + jt
             static_bound = sf * lam_n[i]
             if new_total > static_bound or new_total < -static_bound:
-                # outside the static cone -> slide: cap the running total at kinetic
                 kinetic_bound = df * lam_n[i]
                 if new_total > kinetic_bound:
                     new_total = kinetic_bound
@@ -422,9 +429,9 @@ class Physics(NamedTuple):
             contact = contacts[i]
             impulse = impulses[i]
             if a.physics:
-                a.linear_velocity += -impulse * a.inv_mass
+                a.linear_velocity.scaled_add(-a.inv_mass, impulse, in_place=True)
                 a.angular_velocity += -contact.ra.cross(impulse) * a.inv_inertia
 
             if b.physics:
-                b.linear_velocity += impulse * b.inv_mass
+                b.linear_velocity.scaled_add(b.inv_mass, impulse, in_place=True)
                 b.angular_velocity += contact.rb.cross(impulse) * b.inv_inertia

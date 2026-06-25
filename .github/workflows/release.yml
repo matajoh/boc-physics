@@ -1,0 +1,68 @@
+name: Build release distribution
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build sdist + wheel with embedded PEP 770 SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Pin SOURCE_DATE_EPOCH to the HEAD commit for a reproducible SBOM
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build the sdist and wheel
+        run: python -m build
+
+      - name: Inject the PEP 770 CycloneDX SBOM into the wheel
+        run: python scripts/build_sbom.py inject dist/
+
+      - name: Validate the wheel with PyPI's upload-time checks
+        run: python scripts/validate_wheel.py dist/
+
+      - name: Extract and structurally validate the embedded SBOM
+        run: |
+          python - <<'PY'
+          import glob
+          import pathlib
+          import zipfile
+
+          out = pathlib.Path("sboms")
+          out.mkdir(exist_ok=True)
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as archive:
+              found = [n for n in archive.namelist() if n.endswith(".cdx.json")]
+              assert found, f"no embedded SBOM found in {wheel}"
+              for name in found:
+                  dest = out / pathlib.Path(name).name
+                  dest.write_bytes(archive.read(name))
+          PY
+          python scripts/validate_sbom.py sboms
+
+      - name: Check distribution metadata with twine
+        run: twine check dist/*
+
+      - name: Upload the distribution (wheel + sdist) as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bocphysics-dist
+          path: dist/*
+          if-no-files-found: error

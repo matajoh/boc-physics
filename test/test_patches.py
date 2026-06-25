@@ -8,7 +8,8 @@ import pytest
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
-from bocphysics.patches import build_partition, build_slab_partition
+from bocphysics.patches import build_partition, build_slab_partition, slab_boundaries
+from bocphysics.quadtree import QuadTree
 
 
 def make_engine(detection=DetectionKind.QUADTREE) -> PhysicsEngine:
@@ -91,7 +92,6 @@ def test_every_candidate_pair_classified_exactly_once(seed):
     classified += [boundary.pair for boundary in partition.boundary_pairs]
     expected = [pair for pair in candidates if is_dynamic_pair(pair)]
 
-    # same count, and the exact same pair objects, each appearing once
     assert len(classified) == len(expected)
     assert sorted(map(id, (p for pair in classified for p in pair))) == \
         sorted(map(id, (p for pair in expected for p in pair)))
@@ -143,8 +143,6 @@ def test_dynamic_static_contact_is_interior_to_dynamic_patch():
     patch_of = {b.uid: i for i, p in enumerate(partition.patches) for b in p.bodies}
     index = patch_of[ball.uid]
 
-    # the dynamic-static contact is interior to the ball's patch; the static itself
-    # reaches the worker through the shared geometry snapshot, not a per-patch copy
     assert any((floor in pair) for pair in partition.patches[index].interior_pairs)
 
 
@@ -204,11 +202,8 @@ def test_loose_detection_equals_quadtree_minus_static_static(seed):
                      if not a.physics and not b.physics}
     loose_keys = [frozenset((a.uid, b.uid)) for a, b in loose]
 
-    # the overlapping statics guarantee the drop is actually exercised
     assert static_static, "scene produced no static-static pair to drop"
-    # loose never emits the same pair twice
     assert len(loose_keys) == len(set(loose_keys)), "loose emitted a duplicate pair"
-    # loose == quadtree minus the dropped static-static pairs
     assert set(loose_keys) == quad_keys - static_static
 
 
@@ -242,7 +237,6 @@ def test_slab_tiles_dynamic_bodies_left_to_right(seed):
     seen = [body for patch in partition.patches for body in patch.bodies]
     assert set(map(id, seen)) == set(map(id, dynamic))
 
-    # every body sits in the exact bin its x-rank selects, not merely a sorted one
     count = len(partition.patches)
     total = len(dynamic)
     patch_of = {b.uid: i for i, p in enumerate(partition.patches) for b in p.bodies}
@@ -261,7 +255,6 @@ def test_slab_min_population_caps_slab_count(seed):
 
     dynamic = [b for b in engine.bodies if b.physics]
     assert len(partition.patches) == min(12, len(dynamic) // 6)
-    # the floor is honoured: no slab drops below the requested minimum population
     assert all(len(patch.bodies) >= 6 for patch in partition.patches)
 
 
@@ -358,3 +351,68 @@ def test_slab_dynamic_static_contact_is_interior_to_dynamic_patch():
     patch_of = {b.uid: i for i, p in enumerate(partition.patches) for b in p.bodies}
     index = patch_of[ball.uid]
     assert any((floor in pair) for pair in partition.patches[index].interior_pairs)
+
+
+def make_row(engine, xs):
+    """Add one dynamic circle at each x along the y=0 axis."""
+    for x in xs:
+        engine.add_body(Circle.create(0.5, 2.0, (10, 10, 10))
+                        .move_to(Matrix.vector([x, 0.0])))
+
+
+def test_slab_boundaries_split_between_adjacent_bodies():
+    engine = make_engine()
+    make_row(engine, [-5, -3, 1, 4, 7, 9])
+    partition = build_slab_partition(engine.bodies, [], engine.detection.box,
+                                     num_slabs=3, min_slab_bodies=1)
+    bounds = slab_boundaries(partition)
+    populated = [patch for patch in partition.patches if patch.bodies]
+    assert len(bounds) == len(populated) - 1
+    assert bounds == sorted(bounds)
+    xs = sorted(body.position.x for body in engine.bodies)
+    for x in bounds:
+        assert xs[0] < x < xs[-1]
+
+
+def test_slab_boundaries_empty_without_dynamics():
+    engine = make_engine()
+    partition = build_slab_partition(engine.bodies, [], engine.detection.box, num_slabs=4)
+    assert slab_boundaries(partition) == []
+
+
+def test_slab_boundaries_single_slab_has_no_seam():
+    engine = make_engine()
+    make_row(engine, [-2, 0, 2])
+    partition = build_slab_partition(engine.bodies, [], engine.detection.box, num_slabs=1)
+    assert slab_boundaries(partition) == []
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_slab_boundaries_are_sorted_and_within_range(seed):
+    engine = make_engine()
+    populate_cluster(engine, 24, seed)
+    partition = build_slab_partition(engine.bodies, [], engine.detection.box,
+                                     num_slabs=4, min_slab_bodies=1)
+    bounds = slab_boundaries(partition)
+    assert bounds == sorted(bounds)
+    xs = sorted(body.position.x for body in engine.bodies)
+    for x in bounds:
+        assert xs[0] <= x <= xs[-1]
+
+
+def test_quadtree_boxes_root_only_when_empty():
+    box = make_engine().detection.box
+    tree = QuadTree(box)
+    assert tree.boxes() == [tree.root.box]
+
+
+def test_quadtree_boxes_subdivides_under_a_dense_cluster():
+    engine = make_engine()
+    populate_cluster(engine, 60, seed=3)
+    engine.update_swept_aabbs(1 / 60)
+    tree = QuadTree(engine.detection.box)
+    for body in engine.bodies:
+        tree.add(body)
+    boxes = tree.boxes()
+    assert boxes[0] is tree.root.box
+    assert len(boxes) > 1

@@ -1,16 +1,8 @@
-"""Module providing configuration data structures for the physics engine.
+"""Configuration data structures for the physics engine.
 
-There is a great advantage to driving simulation software via
-configuration files. The first is reproducibility: you can
-reproduce a simulation by running the same configuration file. It also
-makes it easier to share and collaborate on simulations. Finally, it
-makes it easier to experiment with different parameters. While it is
-possible to have every possible parameter as a command line argument,
-this can get unwieldy very quickly and it is very easy to make mistakes.
-
-The pattern here, of having a structured class (like a NamedTuple) which
-parses the JSON and provides default values, is a solid approach to
-emulate.
+Collects the typed, picklable settings the engine and renderer read --
+window :class:`Resolution`, the :class:`PhysicsMode` collision model, the
+:class:`DetectionKind` broad-phase choice, and the tunable constants.
 """
 
 from enum import auto, Enum
@@ -44,7 +36,7 @@ class PhysicsMode(Enum):
 class DetectionKind(Enum):
     """The broad-phase collision-detection algorithm to use."""
 
+    # Selected by name (DetectionKind[...]); the integer values are never persisted or shared.
     BASIC = 1
-    SPATIAL_HASHING = 2
-    QUADTREE = 3
-    LOOSE_QUADTREE = 4
+    QUADTREE = 2
+    LOOSE_QUADTREE = 3

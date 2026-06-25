@@ -1,23 +1,52 @@
 [build-system]
-requires = ["setuptools >= 64"]
+requires = ["setuptools >= 77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name =  "bocphysics"
-version = "0.3"
+name = "bocphysics"
+version = "0.4"
 authors = [
-    { name="Matthew Johnson", email="mj293@cam.ac.uk" },
+    { name = "Matthew Johnson", email = "mj293@cam.ac.uk" },
 ]
-description = "2D rigid body physical simulation using boc"
-dependencies = [
-    "bocpy==0.12.0",
+description = "A 2D rigid-body physics engine and Behavior-Oriented Concurrency teaching demo."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "physics",
+    "simulation",
+    "rigid-body",
+    "concurrency",
+    "behavior-oriented-concurrency",
+    "boc",
+    "parallel",
+    "teaching",
     "pyglet",
-    "webcolors"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Education",
+    "Topic :: Games/Entertainment :: Simulation",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "bocpy>=0.13.0",
+    "pyglet",
+    "webcolors",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytest"
+    "pytest",
 ]
 lint = [
     "flake8>=7.3.0",
@@ -29,9 +58,28 @@ lint = [
     "flake8-quotes>=3.4.0",
     "pep8-naming>=0.15.1",
 ]
+docs = [
+    "sphinx>=7.0",
+    "myst-parser>=2.0",
+    "furo",
+]
+
+[project.urls]
+Homepage = "https://github.com/matajoh/boc-physics"
+Repository = "https://github.com/matajoh/boc-physics"
+Documentation = "https://github.com/matajoh/boc-physics/tree/main/docs"
+Issues = "https://github.com/matajoh/boc-physics/issues"
 
 [project.scripts]
 simulation = "bocphysics:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Confine collection to the in-tree test suite.
+testpaths = ["test"]
+# Make ``scripts/`` importable from tests. The wheel/SBOM scripts there
+# are not part of the installed package (they run only in the release
+# workflow), but their behaviour is covered by the test suite.
+pythonpath = ["scripts"]
