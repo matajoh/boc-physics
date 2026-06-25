@@ -531,6 +531,32 @@ def test_default_partition_is_slabs():
     assert parallel.DEFAULT_SLABS >= 1
 
 
+def test_begin_resolves_and_preserves_auto_request():
+    """begin() turns the AUTO_SLABS sentinel into a concrete worker-scaled int.
+
+    Description:
+        The default request stays the AUTO_SLABS string until begin(), which
+        resolves it against the worker count. The original request is kept on
+        _slab_request so a later begin() re-resolves from the sentinel rather
+        than locking in the first concrete count -- the reason _slab_request
+        exists at all.
+    """
+    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+    stepper = parallel.ParallelStepper(engine)
+    assert stepper.num_slabs == parallel.AUTO_SLABS
+
+    stepper.begin()
+    expected = parallel.resolve_slab_count(parallel.AUTO_SLABS, None)
+    assert isinstance(stepper.num_slabs, int)
+    assert stepper.num_slabs == expected
+    assert stepper._slab_request == parallel.AUTO_SLABS
+
+    stepper.begin()
+    assert stepper.num_slabs == expected
+    assert stepper._slab_request == parallel.AUTO_SLABS
+
+
 def settle_parallel_quadtree(seed):
     """Settle the scatter scene with the loose-quadtree fallback (num_slabs=None)."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,

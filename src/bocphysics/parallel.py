@@ -287,11 +287,14 @@ class ParallelStepper:
         None selects the loose-quadtree cut instead, an alternative partition
         retained for comparison. min_slab_bodies floors each slab's population so
         a small scene collapses to fewer, fuller slabs instead of degenerate
-        one-body slabs (ignored for the quadtree cut).
+        one-body slabs (ignored for the quadtree cut). Because AUTO_SLABS tracks
+        the worker count, the default cut -- and thus the exact settled state --
+        is worker-count dependent; pin an int for a worker-count-independent cut.
         """
-        if num_slabs is not None and num_slabs != AUTO_SLABS and num_slabs < 1:
+        if num_slabs is not None and num_slabs != AUTO_SLABS and (
+                isinstance(num_slabs, bool) or not isinstance(num_slabs, int) or num_slabs < 1):
             raise ValueError(
-                f"num_slabs must be >= 1, AUTO_SLABS, or None, got {num_slabs}")
+                f"num_slabs must be a positive int, AUTO_SLABS, or None, got {num_slabs!r}")
 
         self.engine = engine
         self.coarsen = coarsen

@@ -13,7 +13,7 @@ from pyglet.window import key, mouse
 from .bodies import Circle, Polygon
 from .config import DetectionKind, Resolution
 from .engine import PhysicsEngine, PhysicsMode
-from .parallel import DEFAULT_SLABS, MIN_SLAB_BODIES, ParallelStepper
+from .parallel import AUTO_SLABS, MIN_SLAB_BODIES, ParallelStepper, resolve_slab_count
 from .patches import build_slab_partition, slab_boundaries
 from .quadtree import QuadTree
 from .render import (Camera, draw_box_overlay, draw_frame, draw_slab_fills,
@@ -132,8 +132,9 @@ class Simulation(pyglet.window.Window):
         """Build the selected partition overlay (slabs or quadtree) into a batch."""
         box = self.engine.detection.box
         if self.overlay == "slabs":
+            count = self.stepper.num_slabs if self.stepper else resolve_slab_count(AUTO_SLABS, None)
             partition = build_slab_partition(self.engine.bodies, [], box,
-                                             DEFAULT_SLABS, min_slab_bodies=MIN_SLAB_BODIES)
+                                             count, min_slab_bodies=MIN_SLAB_BODIES)
             edges = [box.left, *slab_boundaries(partition), box.right]
             return draw_slab_fills(edges, box.top, box.bottom, batch, self.camera)
         if self.overlay == "quadtree":
