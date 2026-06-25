@@ -5,6 +5,7 @@ the world-to-screen projection) behind a small seam so the physics code
 never imports pyglet directly.
 """
 
+from colorsys import hls_to_rgb
 import math
 from typing import Tuple, Union
 
@@ -20,7 +21,8 @@ RGBA = Tuple[int, int, int, int]
 BLACK = (0, 0, 0, 255)
 YELLOW = (255, 255, 0, 255)
 OVERLAY_ORDER = 1_000_000
-SLAB_COLOR = (200, 40, 40, 200)
+SLAB_FILL_ALPHA = 30
+SLAB_SEAM_COLOR = (40, 40, 40, 220)
 QUADTREE_COLOR = (40, 100, 200, 200)
 
 
@@ -34,6 +36,13 @@ def to_rgba(color: Color) -> RGBA:
         return (color[0], color[1], color[2], 255)
 
     return (color[0], color[1], color[2], color[3])
+
+
+def to_grayscale(color: Color) -> RGBA:
+    """Convert a colour to its luminance grey, preserving any alpha."""
+    r, g, b, a = to_rgba(color)
+    lum = round(0.299 * r + 0.587 * g + 0.114 * b)
+    return (lum, lum, lum, a)
 
 
 class Camera:
@@ -59,14 +68,15 @@ class Camera:
         return x, self.height - y
 
 
-def draw_body(body, batch, project: Camera, fill_group, line_group) -> Tuple:
+def draw_body(body, batch, project: Camera, fill_group, line_group, grayscale=False) -> Tuple:
     """Draw one body into the batch by type, returning the shapes to keep alive."""
     from pyglet import shapes
+    color = to_grayscale(body.color) if grayscale else to_rgba(body.color)
     if isinstance(body, Circle):
         x, y = project(body.position)
         radius = body.radius * project.scale
         p = Matrix.vector([math.cos(body.angle), math.sin(body.angle)]) * radius * 0.9
-        fill = shapes.Circle(x, y, radius, color=to_rgba(body.color), batch=batch, group=fill_group)
+        fill = shapes.Circle(x, y, radius, color=color, batch=batch, group=fill_group)
         if not body.physics:
             outline = shapes.Arc(x, y, radius, closed=True, thickness=4, color=BLACK, batch=batch, group=line_group)
             return fill, outline
@@ -76,7 +86,7 @@ def draw_body(body, batch, project: Camera, fill_group, line_group) -> Tuple:
         return fill, outline, heading
 
     vertices = [project(v) for v in body.transformed_vertices]
-    fill = shapes.Polygon(*vertices, color=to_rgba(body.color), batch=batch, group=fill_group)
+    fill = shapes.Polygon(*vertices, color=color, batch=batch, group=fill_group)
     outline = shapes.MultiLine(*vertices, closed=True, thickness=4, color=BLACK, batch=batch, group=line_group)
     return (fill, outline)
 
@@ -95,7 +105,7 @@ def draw_static_layer(bodies, batch, project: Camera) -> list:
     return kept
 
 
-def draw_frame(bodies, contacts, batch, project: Camera) -> list:
+def draw_frame(bodies, contacts, batch, project: Camera, grayscale=False) -> list:
     """Draw the moving bodies and contact points; return the shapes to keep alive."""
     from pyglet import graphics, shapes
     fill_group = graphics.Group(order=0)
@@ -103,7 +113,7 @@ def draw_frame(bodies, contacts, batch, project: Camera) -> list:
     mark_group = graphics.Group(order=2)
     kept = []
     for body in bodies:
-        kept.extend(draw_body(body, batch, project, fill_group, line_group))
+        kept.extend(draw_body(body, batch, project, fill_group, line_group, grayscale))
 
     for contact in contacts:
         x, y = project(Matrix.vector([contact[0], contact[1]]))
@@ -113,15 +123,27 @@ def draw_frame(bodies, contacts, batch, project: Camera) -> list:
     return kept
 
 
-def draw_slab_overlay(boundaries, top: float, bottom: float, batch, project: Camera) -> list:
-    """Draw a vertical line at each slab seam x; return the shapes to keep alive."""
+def draw_slab_fills(edges, top: float, bottom: float, batch, project: Camera) -> list:
+    """Fill each slab column between adjacent edges with a translucent spectrum colour."""
     from pyglet import graphics, shapes
     group = graphics.Group(order=OVERLAY_ORDER)
     kept = []
-    for x in boundaries:
+    count = max(1, len(edges) - 1)
+    for i in range(len(edges) - 1):
+        r, g, b = hls_to_rgb(i / count, 0.5, 1.0)
+        color = (round(r * 255), round(g * 255), round(b * 255), SLAB_FILL_ALPHA)
+        x0, y0 = project(Matrix.vector([edges[i], top]))
+        x1, y1 = project(Matrix.vector([edges[i + 1], bottom]))
+        left, right = min(x0, x1), max(x0, x1)
+        lo, hi = min(y0, y1), max(y0, y1)
+        kept.append(shapes.Rectangle(left, lo, right - left, hi - lo,
+                                     color=color, batch=batch, group=group))
+
+    for x in edges[1:-1]:
         x0, y0 = project(Matrix.vector([x, top]))
         x1, y1 = project(Matrix.vector([x, bottom]))
-        kept.append(shapes.Line(x0, y0, x1, y1, thickness=2, color=SLAB_COLOR, batch=batch, group=group))
+        kept.append(shapes.Line(x0, y0, x1, y1, thickness=2,
+                                color=SLAB_SEAM_COLOR, batch=batch, group=group))
 
     return kept
 

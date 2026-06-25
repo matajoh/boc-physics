@@ -16,7 +16,7 @@ from .engine import PhysicsEngine, PhysicsMode
 from .parallel import DEFAULT_SLABS, MIN_SLAB_BODIES, ParallelStepper
 from .patches import build_slab_partition, slab_boundaries
 from .quadtree import QuadTree
-from .render import (Camera, draw_box_overlay, draw_frame, draw_slab_overlay,
+from .render import (Camera, draw_box_overlay, draw_frame, draw_slab_fills,
                      draw_static_layer)
 from .scene import DEFAULT_SCENE, Scene
 
@@ -111,8 +111,9 @@ class Simulation(pyglet.window.Window):
 
     def render_scene(self, batch):
         """Build the moving bodies, contacts, and any partition overlay into one batch."""
+        grayscale = self.overlay != "none"
         dynamics = [body for body in self.engine.bodies if body.render and body.physics]
-        kept = draw_frame(dynamics, self.engine.contacts, batch, self.camera)
+        kept = draw_frame(dynamics, self.engine.contacts, batch, self.camera, grayscale)
         kept.extend(self.draw_overlay(batch))
         return kept
 
@@ -133,8 +134,8 @@ class Simulation(pyglet.window.Window):
         if self.overlay == "slabs":
             partition = build_slab_partition(self.engine.bodies, [], box,
                                              DEFAULT_SLABS, min_slab_bodies=MIN_SLAB_BODIES)
-            return draw_slab_overlay(slab_boundaries(partition), box.top, box.bottom,
-                                     batch, self.camera)
+            edges = [box.left, *slab_boundaries(partition), box.right]
+            return draw_slab_fills(edges, box.top, box.bottom, batch, self.camera)
         if self.overlay == "quadtree":
             tree = QuadTree(box)
             for body in self.engine.bodies:

@@ -3,9 +3,16 @@
 import random
 
 from bocphysics.scene import (BodySpec, DEFAULT_SCENE, Generator, GeneratorSpec,
-                              make_golden_scene, make_pachinko_scene,
+                              make_default_drop_scene, make_golden_scene,
+                              make_open_box_drop_scene, make_pachinko_scene,
                               make_pyramid_scene, make_stack_scene, OPEN_BOX,
-                              Scene)
+                              Scene, ShapeCategory)
+
+
+def _unit_emitter(rate, seed=0, limit=0):
+    return GeneratorSpec((ShapeCategory("circle"),), x_range=(0.0, 0.0),
+                         y_range=(0.0, 0.0), size_range=(1.0, 1.0), rate=rate,
+                         limit=limit, seed=seed)
 
 
 def test_default_scene_matches_legacy_hard_wired_bodies():
@@ -104,9 +111,10 @@ def test_builtin_scenario_scenes_are_loadable():
 
 
 def test_generator_spec_round_trips_through_dict():
-    spec = GeneratorSpec("circle", (10, 20, 30), (1.0, 2.0), rate=5.0, radius=0.4,
-                         spread=2.0, size_jitter=0.3, velocity=(1.0, -2.0),
-                         randomize_color=True, limit=12, seed=7)
+    spec = GeneratorSpec((ShapeCategory("circle"), ShapeCategory("regular_polygon", 2.0, 5)),
+                         x_range=(-3.0, 3.0), y_range=(-1.0, 1.0), size_range=(0.8, 1.6),
+                         rate=5.0, color=(10, 20, 30), randomize_color=True,
+                         density=3.0, limit=12, seed=7)
     assert GeneratorSpec.from_dict(spec.to_dict()) == spec
 
 
@@ -121,9 +129,8 @@ def test_pachinko_scene_has_walls_and_one_generator():
     assert len(scene.statics) > 3
     assert scene.dynamics == ()
     assert len(scene.generators) == 1
-    assert scene.generators[0].kind == "circle"
+    assert scene.generators[0].shapes[0].kind == "circle"
     assert scene.view_height > 30
-    assert scene.generators[0].size_jitter == 0.0
     assert all(body.inv_mass == 0 for body in scene.build())
 
 
@@ -140,42 +147,75 @@ def test_pachinko_is_builtin_and_loadable():
     assert scene.generators
 
 
-def test_generator_emits_at_constant_rate():
+def test_generator_emits_near_poisson_rate():
     rng = random.Random(7)
-    for _ in range(50):
-        rate = rng.uniform(1, 60)
+    for _ in range(20):
+        rate = rng.uniform(5, 40)
         dt = 1 / rng.choice([30, 60, 120])
-        steps = rng.randint(60, 300)
-        gen = Generator(GeneratorSpec("circle", (10, 10, 10), (0, 0),
-                                      rate=rate, radius=0.5))
+        steps = int(rng.uniform(40, 120) / dt)
+        gen = Generator(_unit_emitter(rate, seed=rng.randint(0, 9999)))
         total = sum(len(gen.update(dt)) for _ in range(steps))
-        assert abs(total - rate * steps * dt) <= 1
+        expected = rate * steps * dt
+        assert abs(total - expected) <= 5 * expected ** 0.5 + 5
 
 
 def test_generator_limit_caps_total_emitted():
-    gen = Generator(GeneratorSpec("circle", (10, 10, 10), (0, 0),
-                                  rate=100.0, radius=0.5, limit=7))
-    total = sum(len(gen.update(1 / 60)) for _ in range(100))
+    gen = Generator(_unit_emitter(100.0, limit=7))
+    total = sum(len(gen.update(1 / 60)) for _ in range(1000))
     assert total == 7
 
 
 def test_generator_seeded_streams_are_identical():
-    spec = GeneratorSpec("circle", (10, 10, 10), (0, 0), rate=20.0, radius=0.5,
-                         spread=2.0, size_jitter=0.3, randomize_color=True, seed=99)
+    spec = GeneratorSpec((ShapeCategory("circle"), ShapeCategory("rectangle"),
+                          ShapeCategory("regular_polygon", num_sides=5)),
+                         x_range=(-3.0, 3.0), y_range=(-1.0, 1.0), size_range=(1.0, 2.0),
+                         rate=20.0, randomize_color=True, seed=99)
     a, b = Generator(spec), Generator(spec)
-    pa = [(body.position.x, body.radius, body.color)
-          for _ in range(60) for body in a.update(1 / 60)]
-    pb = [(body.position.x, body.radius, body.color)
-          for _ in range(60) for body in b.update(1 / 60)]
+    pa = [(body.position.x, body.position.y, body.color, body.inv_mass)
+          for _ in range(120) for body in a.update(1 / 60)]
+    pb = [(body.position.x, body.position.y, body.color, body.inv_mass)
+          for _ in range(120) for body in b.update(1 / 60)]
     assert pa and pa == pb
 
 
-def test_generator_emits_dynamic_bodies_with_velocity():
-    gen = Generator(GeneratorSpec("circle", (10, 10, 10), (1, 2), rate=60.0,
-                                  radius=0.5, velocity=(3.0, -1.0)))
+def test_circle_size_is_a_diameter():
+    gen = Generator(GeneratorSpec((ShapeCategory("circle"),), x_range=(0.0, 0.0),
+                                  y_range=(0.0, 0.0), size_range=(2.0, 2.0), rate=1000.0))
     bodies = []
     while not bodies:
         bodies = gen.update(1 / 60)
-    body = bodies[0]
-    assert body.inv_mass > 0
-    assert body.linear_velocity.x == 3.0 and body.linear_velocity.y == -1.0
+    assert bodies[0].radius == 1.0
+
+
+def test_rectangle_size_draws_width_and_height_independently():
+    gen = Generator(GeneratorSpec((ShapeCategory("rectangle"),), x_range=(0.0, 0.0),
+                                  y_range=(0.0, 0.0), size_range=(1.0, 3.0),
+                                  rate=1000.0, seed=3))
+    nonsquare = False
+    for _ in range(300):
+        for body in gen.update(1 / 60):
+            xs = [v.x for v in body.vertices]
+            ys = [v.y for v in body.vertices]
+            if abs((max(xs) - min(xs)) - (max(ys) - min(ys))) > 1e-9:
+                nonsquare = True
+    assert nonsquare
+
+
+def test_drop_scenes_reuse_statics_and_add_emitters():
+    for make, base in ((make_default_drop_scene, DEFAULT_SCENE),
+                       (make_open_box_drop_scene, OPEN_BOX)):
+        scene = make()
+        assert scene.statics == base.statics
+        assert scene.dynamics == ()
+        assert len(scene.generators) == 1
+        kinds = {shape.kind for shape in scene.generators[0].shapes}
+        assert kinds == {"circle", "rectangle", "regular_polygon"}
+        assert all(body.inv_mass == 0 for body in scene.build())
+
+
+def test_drop_scenes_round_trip_and_are_loadable():
+    for name in ("default_drop", "open_box_drop"):
+        scene = Scene.load(name)
+        assert scene.name == name
+        assert scene.generators
+        assert Scene.from_dict(scene.to_dict()) == scene
