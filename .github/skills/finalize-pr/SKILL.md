@@ -1,6 +1,6 @@
 ---
 name: finalize-pr
-description: "Pre-merge finalization checklist for a change. Use when: wrapping up a feature or fix before opening or updating a PR, preparing to hand work back to the user for commit, or when /finalize-pr is invoked. Bumps the package version when warranted, refreshes README benchmark stats and prose to match behavior changes, runs the full test suite and flake8, and surfaces a final summary. Does NOT commit, push, or open PRs — those remain the user's responsibility."
+description: "Pre-merge finalization checklist for a change. Use when: wrapping up a feature or fix before opening or updating a PR, preparing to hand work back to the user for commit, or when /finalize-pr is invoked. Bumps the package version when warranted, refreshes README benchmark stats and prose to match behavior changes, runs an editor-lens pass over the diff to trim comment debt, runs the full test suite and flake8, and surfaces a final summary. Does NOT commit, push, or open PRs — those remain the user's responsibility."
 argument-hint: "Optionally name the change being finalized (e.g. 'substep solver') and any version bump intent (patch/minor/major)"
 ---
 
@@ -103,12 +103,43 @@ flake8 src test bench
 Must exit 0. Fix every finding; do not suppress with `noqa` unless the project
 already does so for that rule and it is justified.
 
-### 6. Final Summary
+### 6. Editor-Lens Pass Over the Diff
+
+Trim comment debt accumulated during the change. Scope this to the **files
+touched by this change** (not the whole repo) using the `editor-lens` agent.
+
+1. Build the list of changed in-scope source files (Python only):
+
+   ```bash
+   git diff --name-only --diff-filter=d main...HEAD \
+     | grep -E '^(src/bocphysics|bench|test|scripts)/.*\.py$'
+   ```
+
+2. Invoke `review-loop` with `editor-lens` as the reviewer and that file
+   list as the target, applying the Keep / Rewrite / Cut policy in
+   [.github/agents/editor-lens.agent.md](../../agents/editor-lens.agent.md).
+   Iterate until the lens reports no new findings.
+
+3. Separately run the editor-lens **cryptic-reference sweep** over *every*
+   changed text file — including `README.md`, `PLAN.md`, and `docs/**` — to
+   catch finding IDs, remediation slugs, and internal plan/review backrefs
+   that leaked into user-facing prose. For user-facing files, propose the
+   rewrite and get user approval before editing; do not silently rewrite.
+
+The editor-lens full-prose scope explicitly excludes `docs/**`, `README.md`,
+`PLAN.md`, and `.github/**` — only the cryptic-reference sweep touches those.
+Re-run `flake8` after this pass since collapsing comments can shift lines.
+
+### 7. Final Summary
 
 Report back to the user:
 
 - The version (old → new, or "unchanged" with the reason).
 - Which README/doc sections were updated, with the headline stat delta.
+- The editor-lens result: counts of cuts / rewrites / kept, multi-line
+  comments collapsed, and any cryptic references found in user-facing docs.
+- Anything the editor-lens flagged as ambiguous or as a finding (e.g. a
+  classical-synchronization rationale) that needs the user's decision.
 - Test result (`N passed`) and lint result (`rc=0`).
 - Any deferred items or follow-ups noticed but intentionally not done.
 - An explicit reminder that the tree is ready for **the user** to commit —

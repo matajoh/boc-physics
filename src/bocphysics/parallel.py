@@ -24,20 +24,10 @@ GEOMETRY_KEY = "geometry"
 GEOMETRY_VERSION_KEY = "geometry_version"
 CONFIG_KEY = "config"
 
-# the parallel default cut: K equal-population vertical slabs. Gate G3 measured
-# this beating the loose-quadtree cut (~1.4-1.5x frame time, steal_failures
-# halved) because vertical slabs follow gravity's stacking direction, so the
-# seam colour count -- and thus the per-substep barrier depth -- drops ~9 -> ~2-4
 DEFAULT_SLABS = 12
 
-# floor on a slab's population: the slab count is capped at n_dynamic // this, so
-# a small or sparse scene collapses to fewer, fuller slabs rather than one-body
-# slabs that would turn every interior contact into a seam. At ~80 bodies this
-# still yields the full DEFAULT_SLABS (80 // 6 = 13, capped to 12) -- the G3 point
 MIN_SLAB_BODIES = 6
 
-# each worker sub-interpreter imports this module fresh, so this cache is
-# naturally per-interpreter: a body shell is rebuilt once per uid and reused
 shell_cache = geometry.ShellCache()
 
 
@@ -128,7 +118,7 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
         on each cown's FIFO. The pair block carries (uid_a, uid_b) in endpoint
         order so the contact normal is never flipped.
 
-        Known divergence (Chunk-4 M1): the seam manifold is built here, after
+        Known divergence: the seam manifold is built here, after
         each patch has already velocity-solved its interior, so the restitution
         target sampled in restitution_bias sees an already-damped closing speed.
         The serial path builds every manifold up front at the post-integration,
@@ -155,7 +145,6 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
     by_uid = {shell.uid: shell for shell in shells_a}
     by_uid.update({shell.uid: shell for shell in shells_b})
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in boundary_uid_pairs]
-    # seam restitution is sampled in this build, post interior solve, so it is suppressed above threshold (Chunk-4 M1)
     solver.resolve_manifolds(config.physics, pairs, config.num_velocity_iterations,
                              batched=config.batched)
 
@@ -273,10 +262,10 @@ class ParallelStepper:
         num_slabs selects the partition strategy: an int >= 1 cuts the world into
         that many equal-population vertical slabs (the default, DEFAULT_SLABS),
         which keeps the seam graph -- and thus the parallel barrier depth -- far
-        shallower under gravity; None selects the loose-quadtree cut instead, the
-        Phase 5 fallback the slab cut superseded at Gate G3. min_slab_bodies
-        floors each slab's population so a small scene collapses to fewer, fuller
-        slabs instead of degenerate one-body slabs (ignored for the quadtree cut).
+        shallower under gravity; None selects the loose-quadtree cut instead, an
+        alternative partition retained for comparison. min_slab_bodies floors
+        each slab's population so a small scene collapses to fewer, fuller slabs
+        instead of degenerate one-body slabs (ignored for the quadtree cut).
         """
         if num_slabs is not None and num_slabs < 1:
             raise ValueError(f"num_slabs must be >= 1 or None, got {num_slabs}")

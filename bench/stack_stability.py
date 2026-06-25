@@ -9,7 +9,7 @@ settle, and reports the metrics that position correction actually governs:
 * drift       -- largest horizontal displacement from the stack centre line
 * jitter      -- mean kinetic energy over the final frames (rest should be still)
 
-Unlike the drop-box probe this scene is fully reproducible: there is no
+Unlike the drop-box benchmark this scene is fully reproducible: there is no
 ``Matrix.uniform``, so the same parameters give the same numbers every run.
 
 Run from the repo root with the project venv active::
@@ -92,7 +92,6 @@ def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "colum
     else:
         build_stack(engine, levels)
 
-    # record each body's starting position so drift is measured against it
     start_x = {id(body): body.position.x for body in dynamic_bodies(engine)}
     start_span = horizontal_span(dynamic_bodies(engine))
 
@@ -100,8 +99,6 @@ def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "colum
     peak_spread = 0.0
     for frame in range(1, frames + 1):
         engine.step(dt)
-        # spread is measured against the start span so a pyramid bulging sideways
-        # before it topples shows up even while every body is still in bounds
         peak_spread = max(peak_spread, horizontal_span(dynamic_bodies(engine)) - start_span)
         if frame > frames - tail:
             jitter_sum += total_kinetic_energy(engine)

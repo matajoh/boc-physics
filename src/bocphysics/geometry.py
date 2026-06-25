@@ -101,7 +101,6 @@ def build_shell(geometry: BodyGeometry) -> RigidBody:
 
     body.move_to(geometry.position)
     body.rotate_to(geometry.angle)
-    # mirror the engine's component-based system flags so resolve sees the same body
     body.physics = geometry.physics
     body.collision = True
     body.render = True

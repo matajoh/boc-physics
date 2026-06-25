@@ -22,7 +22,7 @@ from .physics import Physics, TangentData
 Manifold = Tuple
 ContactSet = Optional[Set[Tuple[float, float]]]
 
-# A/B toggle: when True, ROTATION/FRICTION velocity solves use the batched kernel
+# Module-global A/B toggle; the parallel path snapshots it once in begin(), so set it before then.
 use_batched_solver = False
 
 
@@ -46,9 +46,9 @@ def integrate_block(bodies: List[RigidBody], gravity, dt: float):
     angle = Matrix(n, 1, [b.angle for b in bodies])
     spin = Matrix(n, 1, [b.angular_velocity for b in bodies])
 
-    velocity = velocity + gravity * dt
-    position = position + velocity * dt
-    angle = angle + spin * dt
+    velocity.add(gravity * dt, out=velocity)
+    position.scaled_add(dt, velocity, in_place=True)
+    angle.scaled_add(dt, spin, in_place=True)
 
     for i, body in enumerate(bodies):
         body.linear_velocity = velocity[i]
@@ -70,7 +70,6 @@ def build_manifold(a: RigidBody, b: RigidBody, contacts: ContactSet):
     """
     collision = detect_collision(a, b)
     if collision is None:
-        # false positive
         return None
 
     c0, c1, _id0, _id1 = find_contact_points(a, b, collision)
@@ -142,8 +141,8 @@ def build_tangent_data(constraint) -> TangentData:
         The pose is frozen for the whole velocity loop, so the tangent axis
         (normal.perpendicular()) and each contact's tangent effective mass are
         constant across sweeps. Computing them once per constraint here -- not per
-        sweep inside apply_accumulated -- is a pure hoist, bit-identical to the
-        validated probe which built the same expressions in the same order.
+        sweep inside apply_accumulated -- is a pure hoist that leaves the result
+        bit-identical to evaluating the same expressions inline each sweep.
     """
     a = constraint.a
     b = constraint.b

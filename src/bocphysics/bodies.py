@@ -25,11 +25,7 @@ class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float)
                 self.bottom < other.top)
 
     def contains(self, other: "AABB") -> bool:
-        """Check if this AABB contains another AABB.
-
-        Description:
-            This test is designed to be as efficient as possible.
-        """
+        """Check if this AABB contains another AABB."""
         return not (self.left > other.left or
                     self.right < other.right or
                     self.top > other.top or
@@ -100,7 +96,6 @@ class Circle:
 
         self.size = radius * 2
         self.aabb_ = AABB(0, 0, 0, 0)
-        # the swept AABB is per-frame transient state set by the engine
         self.swept_aabb = self.aabb_
         self.update_needed_ = True
 
@@ -159,9 +154,6 @@ class Circle:
 
         mass = radius**2 * math.pi * density
         inv_mass = 1 / mass
-        # The moment of inertia of a circle is 0.5 * mass * radius^2
-        # when interpreted as a "thin solid disk"
-        # see: https://en.wikipedia.org/wiki/List_of_moments_of_inertia
         inertia = 0.5 * mass * radius * radius
         inv_inertia = 1 / inertia
         return Circle(radius, color,
@@ -206,9 +198,7 @@ class Polygon:
             self.angular_velocity = angular_velocity
 
         self.aabb_ = AABB(0, 0, 0, 0)
-        # the swept AABB is per-frame transient state set by the engine
         self.swept_aabb = self.aabb_
-        # vertices and normals live as (N x 2) blocks so the transform is one batched matrix product
         self.vertices_block_ = Matrix(len(vertices), 2, [c for v in vertices for c in (v.x, v.y)])
         self.normals_block_ = Matrix(len(normals), 2, [c for n in normals for c in (n.x, n.y)])
         self.transformed_vertices_block_ = self.vertices_block_.copy()
@@ -246,7 +236,7 @@ class Polygon:
         Description:
             We want to avoid updating the transformed vertices and normals
             unless absolutely necessary. This is an example of lazy
-            evaluation using a "dirty" bit, in this case the update_needed_
+            evaluation using a "dirty" bit, in this case the ``update_needed_``
             flag. The rotation is a single batched matrix product over the
             whole (N x 2) vertex block rather than a per-vertex Python loop.
         """
@@ -256,7 +246,6 @@ class Polygon:
         self.update_needed_ = False
         cos_angle = math.cos(self.angle)
         sin_angle = math.sin(self.angle)
-        # rot_t is the transpose of the rotation matrix, so a row batch rotates as block @ rot_t
         rot_t = Matrix(2, 2, [cos_angle, sin_angle, -sin_angle, cos_angle])
         self.transformed_normals_block_ = self.normals_block_ @ rot_t
         self.transformed_vertices_block_ = self.vertices_block_ @ rot_t + self.position
@@ -305,9 +294,6 @@ class Polygon:
 
         mass = width * height * density
         inv_mass = 1 / mass
-        # The moment of inertia of a rectangle is (1 / 12) * mass * (width^2 + height^2)
-        # when interpreted as a "thin rectangular plate"
-        # see: https://en.wikipedia.org/wiki/List_of_moments_of_inertia
         inertia = (1 / 12) * mass * (width**2 + height**2)
         inv_inertia = 1 / inertia
 
@@ -324,6 +310,7 @@ class Polygon:
         vertices = [Matrix.vector([radius * math.cos(i * angle), radius * math.sin(i * angle)])
                     for i in range(num_sides)]
         normals = []
+        # even polygons have parallel opposite edges, so only half the face normals are distinct SAT axes
         if num_sides % 2 == 0:
             for i in range(num_sides // 2):
                 n = (vertices[i] + vertices[i + 1]).normalize()
@@ -340,8 +327,7 @@ class Polygon:
         perimeter = num_sides * (vertices[1] - vertices[0]).length
         mass = 0.5 * perimeter * apothem * density
         inv_mass = 1 / mass
-        # The moment of inertia of a regular polygon is 1/2 m s^2 (1 - 2/3 sin^2(\pi / n))
-        # see: https://en.wikipedia.org/wiki/List_of_moments_of_inertia
+        # moment of inertia of a regular n-gon about its centroid
         inertia = 0.5 * mass * radius**2 * (1 - 2 / 3 * math.sin(math.pi / num_sides)**2)
         inv_inertia = 1 / inertia
 

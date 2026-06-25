@@ -1,4 +1,4 @@
-"""This module provides an implemention of a QuadTree data structure."""
+"""This module provides an implementation of a QuadTree data structure."""
 
 from typing import List, Tuple
 
@@ -150,10 +150,8 @@ class QuadTree:
             for value in node.values:
                 i = node.get_quadrant(value.swept_aabb)
                 if i != -1:
-                    # this value fits into a leaf box
                     node[i].values.append(value)
                 else:
-                    # this value straddles multiple leaf boxes
                     new_values.append(value)
 
             node.values = new_values
@@ -166,15 +164,12 @@ class QuadTree:
                     node.values.append(value)
                     return
 
-                # this leaf is full, split it
                 split_(node)
 
             i = node.get_quadrant(value.swept_aabb)
             if i != -1:
-                # keep going down the tree
                 add_(node[i], depth+1, value)
             else:
-                # this value straddles multiple leaf boxes
                 node.values.append(value)
 
         add_(self.root, 0, value)
@@ -187,13 +182,11 @@ class QuadTree:
             num_values = len(node.values)
             for child in node:
                 if not child.is_leaf:
-                    # we can only merge inner nodes with leaf children
                     return False
 
                 num_values += len(child.values)
 
             if num_values > self.threshold:
-                # we can't merge because the total number of values is too high
                 return False
 
             for child in node:
@@ -206,14 +199,12 @@ class QuadTree:
             assert node is not None
             assert node.box.contains(value.swept_aabb)
             if node.is_leaf:
-                # remove the value from the leaf
                 node.values.remove(value)
                 return True
 
             i = node.get_quadrant(value.swept_aabb)
             if i != -1:
                 if remove_(node[i], value):
-                    # try to merge the child node
                     return try_merge_(node)
             else:
                 node.values.remove(value)
@@ -234,7 +225,6 @@ class QuadTree:
             if node.is_leaf:
                 return
 
-            # gather values from child nodes
             for child in node:
                 if child.intersects(query_box):
                     query_(child, query_box, values)
@@ -247,13 +237,9 @@ class QuadTree:
         """Find all intersections in the tree."""
         def find_intersections_in_child_(node: Node, value: RigidBody,
                                          intersections: List[Tuple[RigidBody, RigidBody]]):
-            # depth first traversal of the tree looking for intersections
             if node.box.disjoint(value.swept_aabb):
-                # no need to check this subtree
                 return
 
-            # check these nodes for intersections for value. The value is
-            # above the current node, so we will not have a duplicate check.
             for other in node.values:
                 if value.swept_aabb.intersects(other.swept_aabb):
                     intersections.append((value, other))
@@ -261,13 +247,11 @@ class QuadTree:
             if node.is_leaf:
                 return
 
-            # keep walking the tree
             for child in node:
                 find_intersections_in_child_(child, value, intersections)
 
         def find_all_intersections_(node: Node,
                                     intersections: List[Tuple[RigidBody, RigidBody]]):
-            # find all intersections in this subtree
             num_values = len(node.values)
             for i in range(num_values):
                 for j in range(0, i):
@@ -278,16 +262,26 @@ class QuadTree:
                 return
 
             for value in node.values:
-                # each value in the node at this level must be checked
-                # against all other values in the subtree
                 for child in node:
                     find_intersections_in_child_(child, value, intersections)
 
             for child in node:
-                # keep walking the tree
                 find_all_intersections_(child, intersections)
 
         find_all_intersections_(self.root, intersections)
+
+    def boxes(self) -> List[AABB]:
+        """Return the box of every node, for drawing the subdivision as an overlay."""
+        found = []
+
+        def walk(node: Node):
+            found.append(node.box)
+            if not node.is_leaf:
+                for child in node:
+                    walk(child)
+
+        walk(self.root)
+        return found
 
 
 class LooseQuadTree:
@@ -318,7 +312,6 @@ class LooseQuadTree:
 
     def insert_(self, node: Node, depth: int, body: RigidBody):
         """Descend by centre until the loose stop rule parks the body."""
-        # a body must not sink into any cell smaller than its own loose bound
         too_deep = (depth >= self.max_depth or
                     node.box.size.x / 2 < self.coarsen * body.radius * 2)
         if node.is_leaf:

@@ -22,8 +22,7 @@ Description:
     ROTATION mode keeps the stock non-accumulated normal sweep, mirroring the
     serial path's per-mode split. The colours visit in a fixed body-disjoint
     order rather than the serial path's gravity-aligned apex-first order, so for
-    FRICTION the two are not bit-identical; that path stays gated by settling-
-    band tests, not the bit-exact golden master.
+    FRICTION the two are not bit-identical.
 """
 
 import math
@@ -260,8 +259,8 @@ def friction_accumulate(vel, spin, inv_m, inv_i, blocks, idx_a, idx_b, lam_n,
     Description:
         Reads the post-normal velocity along the fixed tangent axis, adds the
         increment to the running tangent total lam_t, then selects the cone branch
-        with masks: inside the static cone (|total| <= sf*lam_n) keeps the total,
-        outside slides and clamps the total to the kinetic cone (+/- df*lam_n).
+        with masks: inside the static cone (``abs(total) <= sf*lam_n``) keeps the total,
+        outside slides and clamps the total to the kinetic cone (``+/- df*lam_n``).
         Applies only the change and returns the new running total. The axis is
         fixed, so there is no tiny-tangent guard. Mutates vel and spin.
     """

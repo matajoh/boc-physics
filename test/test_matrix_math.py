@@ -54,7 +54,6 @@ def test_bodies_have_independent_position_matrices():
 def test_move_to_copies_the_argument():
     pos = Matrix.vector([5.0, 6.0])
     body = Circle.create(1.0, 1.0, (1, 2, 3)).move_to(pos)
-    # mutating the caller's vector must not move the body
     pos += Matrix.vector([100.0, 100.0])
     assert body.position.x == 5.0 and body.position.y == 6.0
 
@@ -63,7 +62,6 @@ def test_step_integrates_gravity():
     body = Circle.create(1.0, 1.0, (1, 2, 3)).move_to(Matrix.vector([0.0, 0.0]))
     gravity = Matrix.vector([0.0, 10.0])
     body.step(0.1, gravity)
-    # v = g*dt = (0, 1); pos = v*dt = (0, 0.1)
     assert math.isclose(body.linear_velocity.y, 1.0)
     assert math.isclose(body.position.y, 0.1)
 
@@ -78,5 +76,4 @@ def test_aabb_helpers_return_matrices():
 def test_rectangle_vertices_are_distinct_matrices():
     rect = Polygon.create_rectangle(2.0, 2.0, 1.0, (1, 2, 3))
     verts = rect.transformed_vertices
-    # transformed vertices must be distinct objects, not shared references
     assert len({id(v) for v in verts}) == len(verts)
