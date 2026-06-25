@@ -65,46 +65,72 @@ class BodySpec(NamedTuple):
         return BodySpec(**fields)
 
 
-class GeneratorSpec(NamedTuple):
-    """A declarative emitter that drops dynamic bodies at a constant rate.
+class ShapeCategory(NamedTuple):
+    """One outcome of a generator's categorical shape distribution.
 
     Description:
-        A generator is the dynamic counterpart to a BodySpec: where a BodySpec
-        names one fixed body, a generator names a stream of bodies emitted from
-        a point at a steady ``rate`` (bodies per second). Each emission jitters
-        the spawn x by ``spread`` and the shape's size by ``size_jitter``, and
-        optionally randomises the colour. ``limit`` caps the total emitted (0 is
-        unlimited); ``seed`` makes the stream reproducible.
+        ``kind`` is one of ``circle``, ``rectangle`` or ``regular_polygon``;
+        ``weight`` is its relative probability (weights are normalised across a
+        generator's categories); ``num_sides`` is used only by polygons.
     """
 
     kind: str
-    color: Color
-    position: Tuple[float, float]
-    rate: float
-    radius: float = 0.0
-    width: float = 0.0
-    height: float = 0.0
+    weight: float = 1.0
     num_sides: int = 0
-    density: float = 2.0
-    spread: float = 0.0
-    size_jitter: float = 0.0
-    velocity: Tuple[float, float] = (0.0, 0.0)
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serialisable dict describing this category."""
+        return self._asdict()
+
+    @staticmethod
+    def from_dict(data: dict) -> "ShapeCategory":
+        """Create a shape category from a dict, applying field defaults."""
+        fields = {key: data[key] for key in ShapeCategory._fields if key in data}
+        return ShapeCategory(**fields)
+
+
+class GeneratorSpec(NamedTuple):
+    """A declarative emitter that drops dynamic bodies by sampling distributions.
+
+    Description:
+        Each emission samples four independent quantities: the spawn ``x`` from
+        ``Uniform(x_range)``, the spawn ``y`` from ``Uniform(y_range)``, a shape
+        from the categorical ``shapes`` distribution, and a ``size`` (a diameter)
+        from ``Uniform(size_range)``. A circle or polygon takes radius
+        ``size / 2``; a rectangle draws ``size`` twice for its width and height.
+        Emissions follow a Poisson process at mean ``rate`` per second, so the
+        gaps between drops are exponentially distributed (memoryless timing
+        jitter). ``randomize_color`` gives each body a random hue, otherwise the
+        fixed ``color`` is used; ``limit`` caps the total emitted (0 is
+        unlimited); ``seed`` makes the stream reproducible.
+    """
+
+    shapes: Tuple[ShapeCategory, ...]
+    x_range: Tuple[float, float]
+    y_range: Tuple[float, float]
+    size_range: Tuple[float, float]
+    rate: float
+    color: Color = (200, 200, 200)
     randomize_color: bool = False
+    density: float = 2.0
     limit: int = 0
     seed: int = 0
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable dict describing this generator."""
-        return self._asdict()
+        data = self._asdict()
+        data["shapes"] = [shape.to_dict() for shape in self.shapes]
+        return data
 
     @staticmethod
     def from_dict(data: dict) -> "GeneratorSpec":
         """Create a generator spec from a dict, applying field defaults."""
         fields = {key: data[key] for key in GeneratorSpec._fields if key in data}
-        if "position" in fields:
-            fields["position"] = tuple(fields["position"])
-        if "velocity" in fields:
-            fields["velocity"] = tuple(fields["velocity"])
+        if "shapes" in fields:
+            fields["shapes"] = tuple(ShapeCategory.from_dict(s) for s in fields["shapes"])
+        for key in ("x_range", "y_range", "size_range"):
+            if key in fields:
+                fields[key] = tuple(fields[key])
         if "color" in fields and isinstance(fields["color"], list):
             fields["color"] = tuple(fields["color"])
         return GeneratorSpec(**fields)
@@ -115,47 +141,66 @@ class Generator:
 
     Description:
         The spec is immutable data; this object carries the per-run mutable
-        state -- a seeded rng and a fractional accumulator -- so the same spec
-        can drive several independent, reproducible streams. ``update(dt)``
-        accrues ``rate * dt`` emissions and releases the whole-number part each
-        frame, carrying the remainder so the long-run rate is exact.
+        state -- a seeded rng and the time of the next scheduled emission -- so
+        the same spec can drive several independent, reproducible streams.
+        ``update(dt)`` advances a clock and releases every body whose Poisson
+        arrival time has passed this frame.
     """
 
     def __init__(self, spec: GeneratorSpec):
-        """Create a generator from its spec, seeding its rng and accumulator."""
+        """Create a generator from its spec, seeding its rng and arrival clock."""
         self.spec = spec
         self.rng = random.Random(spec.seed)
-        self.accumulator = 0.0
         self.emitted = 0
+        self.clock = 0.0
+        self.next_time = self._next_interval()
+
+    def _next_interval(self) -> float:
+        """Draw an exponential gap until the next emission, or never if idle."""
+        if self.spec.rate <= 0:
+            return math.inf
+        return self.rng.expovariate(self.spec.rate)
+
+    def _sample_size(self) -> float:
+        """Sample one diameter from the uniform size distribution."""
+        return self.rng.uniform(*self.spec.size_range)
+
+    def _sample_color(self) -> Color:
+        """Return a random hue when enabled, otherwise the spec's fixed colour."""
+        if self.spec.randomize_color:
+            r, g, b = hls_to_rgb(self.rng.random(), 0.5, 1.0)
+            return (int(r * 255), int(g * 255), int(b * 255))
+        return self.spec.color
 
     def emit(self) -> RigidBody:
-        """Build one jittered dynamic body from the spec via a transient BodySpec."""
+        """Sample a position, shape, size and colour, and build one dynamic body."""
         spec = self.spec
-        x = spec.position[0] + self.rng.uniform(-spec.spread, spec.spread)
-        factor = 1.0 + self.rng.uniform(-spec.size_jitter, spec.size_jitter)
-        color = spec.color
-        if spec.randomize_color:
-            r, g, b = hls_to_rgb(self.rng.random(), 0.5, 1.0)
-            color = (int(r * 255), int(g * 255), int(b * 255))
-        body = BodySpec(spec.kind, color, (x, spec.position[1]),
-                        width=spec.width * factor, height=spec.height * factor,
-                        num_sides=spec.num_sides, radius=spec.radius * factor,
-                        density=spec.density).build(is_static=False)
-        if spec.velocity != (0.0, 0.0):
-            body.linear_velocity = Matrix.vector([spec.velocity[0], spec.velocity[1]])
-        return body
+        shape = self.rng.choices(spec.shapes, weights=[s.weight for s in spec.shapes])[0]
+        x = self.rng.uniform(*spec.x_range)
+        y = self.rng.uniform(*spec.y_range)
+        color = self._sample_color()
+        if shape.kind == "rectangle":
+            body = BodySpec("rectangle", color, (x, y), width=self._sample_size(),
+                            height=self._sample_size(), density=spec.density)
+        elif shape.kind == "circle":
+            body = BodySpec("circle", color, (x, y), radius=self._sample_size() / 2,
+                            density=spec.density)
+        else:
+            body = BodySpec("regular_polygon", color, (x, y), num_sides=shape.num_sides,
+                            radius=self._sample_size() / 2, density=spec.density)
+        return body.build(is_static=False)
 
     def update(self, dt: float) -> List[RigidBody]:
-        """Advance the accumulator by dt and return the bodies emitted this frame."""
-        self.accumulator += self.spec.rate * dt
+        """Advance the arrival clock by dt and return the bodies emitted this frame."""
+        self.clock += dt
         bodies = []
-        while self.accumulator >= 1.0:
+        while self.clock >= self.next_time:
             if self.spec.limit and self.emitted >= self.spec.limit:
-                self.accumulator = 0.0
+                self.next_time = math.inf
                 break
-            self.accumulator -= 1.0
             bodies.append(self.emit())
             self.emitted += 1
+            self.next_time += self._next_interval()
         return bodies
 
 
@@ -331,13 +376,35 @@ def make_pachinko_scene(rows: int = 6) -> Scene:
     statics.append(_bar_between((-x_wall, floor_outer), (-3.0, floor_inner), 0.6, "gray"))
     statics.append(_bar_between((x_wall, floor_outer), (3.0, floor_inner), 0.6, "gray"))
     statics.append(BodySpec("rectangle", "gray", (0.0, wall_bottom), width=x_wall - 0.5, height=0.6))
-    generator = GeneratorSpec("circle", (0, 0, 0), (0.0, wall_top + 0.5), rate=3.0,
-                              radius=0.6, spread=4.0, randomize_color=True)
+    generator = GeneratorSpec((ShapeCategory("circle"),), x_range=(-4.0, 4.0),
+                              y_range=(wall_top + 0.5, wall_top + 0.5),
+                              size_range=(1.2, 1.2), rate=3.0, randomize_color=True)
     view_height = machine_height + 5.5
     return Scene("pachinko", tuple(statics), (), (generator,),
                  view_height=view_height, view_aspect=24.0 / view_height)
 
 
+def _drop_emitter(x_range: Tuple[float, float], rate: float) -> GeneratorSpec:
+    """A single emitter raining a mix of large convex shapes from above the arena."""
+    shapes = (ShapeCategory("circle"), ShapeCategory("rectangle"),
+              ShapeCategory("regular_polygon", num_sides=3),
+              ShapeCategory("regular_polygon", num_sides=5),
+              ShapeCategory("regular_polygon", num_sides=6))
+    return GeneratorSpec(shapes, x_range=x_range, y_range=(-13.0, -13.0),
+                         size_range=(1.6, 2.4), rate=rate, randomize_color=True, seed=1)
+
+
+def make_default_drop_scene() -> Scene:
+    """The default ramp scene with an emitter raining shapes onto its ledges."""
+    return Scene("default_drop", DEFAULT_SCENE.statics, (), (_drop_emitter((-8.0, 8.0), 6.0),))
+
+
+def make_open_box_drop_scene() -> Scene:
+    """The open box steadily filled by an emitter raining shapes into it."""
+    return Scene("open_box_drop", OPEN_BOX.statics, (), (_drop_emitter((-9.0, 9.0), 10.0),))
+
+
 BUILTIN_SCENES = {scene.name: scene for scene in (
     DEFAULT_SCENE, OPEN_BOX, make_stack_scene(), make_pyramid_scene(),
-    make_golden_scene(), make_pachinko_scene())}
+    make_golden_scene(), make_pachinko_scene(),
+    make_default_drop_scene(), make_open_box_drop_scene())}

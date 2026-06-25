@@ -6,7 +6,7 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics.render import BLACK, Camera, open_encoder, to_rgba, YELLOW
+from bocphysics.render import BLACK, Camera, open_encoder, to_grayscale, to_rgba, YELLOW
 
 
 def _pyglet_graphics_available() -> bool:
@@ -54,6 +54,18 @@ def test_to_rgba_rgb_tuple_gets_alpha():
 
 def test_to_rgba_rgba_tuple_passthrough():
     assert to_rgba((10, 20, 30, 128)) == (10, 20, 30, 128)
+
+
+def test_to_grayscale_collapses_to_luminance():
+    assert to_grayscale("black") == (0, 0, 0, 255)
+    assert to_grayscale("white") == (255, 255, 255, 255)
+    assert to_grayscale((200, 200, 200)) == (200, 200, 200, 255)
+
+
+def test_to_grayscale_preserves_alpha():
+    r, g, b, a = to_grayscale((10, 20, 30, 128))
+    assert (r, g, b) == (18, 18, 18)
+    assert a == 128
 
 
 def test_color_constants():
