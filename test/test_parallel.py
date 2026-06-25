@@ -521,10 +521,13 @@ def test_slab_count_below_one_is_rejected(num_slabs):
 
 
 def test_default_partition_is_slabs():
-    """The default partition is the equal-population slab cut, not the quadtree."""
+    """The default partition is the worker-scaled slab cut, never the quadtree."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
-    assert parallel.ParallelStepper(engine).num_slabs == parallel.DEFAULT_SLABS
+    assert parallel.ParallelStepper(engine).num_slabs == parallel.AUTO_SLABS
+    assert parallel.resolve_slab_count(parallel.AUTO_SLABS, 4) == 10
+    assert parallel.resolve_slab_count(parallel.AUTO_SLABS, 8) == 20
+    assert parallel.resolve_slab_count(None, 8) is None
     assert parallel.DEFAULT_SLABS >= 1
 
 

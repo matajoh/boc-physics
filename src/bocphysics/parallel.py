@@ -11,10 +11,10 @@ Description:
     order, which is how successive sub-steps stay ordered without any barrier.
 """
 
-from typing import List, NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Tuple, Union
 
 from bocpy import (Cown, Matrix, notice_read, notice_seed, PinnedCown, start,
-                   when)
+                   when, WORKER_COUNT)
 
 from . import geometry, solver, transport
 from .patches import build_partition, build_slab_partition
@@ -28,7 +28,27 @@ DEFAULT_SLABS = 12
 
 MIN_SLAB_BODIES = 6
 
+SLABS_PER_WORKER = 2.5
+
+AUTO_SLABS = "auto"
+
 shell_cache = geometry.ShellCache()
+
+
+def resolve_slab_count(num_slabs, worker_count):
+    """Resolve the AUTO_SLABS sentinel to a worker-scaled slab count.
+
+    Description:
+        The frame-time optimum tracks the worker count at roughly
+        SLABS_PER_WORKER slabs per worker, so a fixed count under- or over-cuts
+        as cores change. AUTO_SLABS scales the partition to the machine; a
+        concrete int or None passes straight through. worker_count None means
+        bocpy's default (WORKER_COUNT), the count begin() will actually start.
+    """
+    if num_slabs != AUTO_SLABS:
+        return num_slabs
+    effective = worker_count if worker_count is not None else WORKER_COUNT
+    return max(1, round(SLABS_PER_WORKER * effective))
 
 
 class SolveConfig(NamedTuple):
@@ -255,24 +275,28 @@ class ParallelStepper:
     """
 
     def __init__(self, engine, coarsen: float = 2.0, threshold: int = 8,
-                 num_slabs: Optional[int] = DEFAULT_SLABS,
+                 num_slabs: Union[int, str, None] = AUTO_SLABS,
                  min_slab_bodies: int = MIN_SLAB_BODIES):
         """Compose a stepper over an engine, with the loose-cut tuning knobs.
 
-        num_slabs selects the partition strategy: an int >= 1 cuts the world into
-        that many equal-population vertical slabs (the default, DEFAULT_SLABS),
-        which keeps the seam graph -- and thus the parallel barrier depth -- far
-        shallower under gravity; None selects the loose-quadtree cut instead, an
-        alternative partition retained for comparison. min_slab_bodies floors
-        each slab's population so a small scene collapses to fewer, fuller slabs
-        instead of degenerate one-body slabs (ignored for the quadtree cut).
+        num_slabs selects the partition strategy. AUTO_SLABS (the default) scales
+        the cut to the machine, resolving in begin() to about SLABS_PER_WORKER
+        slabs per worker; an int >= 1 pins that many equal-population vertical
+        slabs (DEFAULT_SLABS is the fixed reference count), which keeps the seam
+        graph -- and thus the parallel barrier depth -- shallow under gravity;
+        None selects the loose-quadtree cut instead, an alternative partition
+        retained for comparison. min_slab_bodies floors each slab's population so
+        a small scene collapses to fewer, fuller slabs instead of degenerate
+        one-body slabs (ignored for the quadtree cut).
         """
-        if num_slabs is not None and num_slabs < 1:
-            raise ValueError(f"num_slabs must be >= 1 or None, got {num_slabs}")
+        if num_slabs is not None and num_slabs != AUTO_SLABS and num_slabs < 1:
+            raise ValueError(
+                f"num_slabs must be >= 1, AUTO_SLABS, or None, got {num_slabs}")
 
         self.engine = engine
         self.coarsen = coarsen
         self.threshold = threshold
+        self._slab_request = num_slabs
         self.num_slabs = num_slabs
         self.min_slab_bodies = min_slab_bodies
         self.dt = 1 / 60
@@ -284,6 +308,7 @@ class ParallelStepper:
         """Start the runtime, pin the engine, and seed the set-once solve config."""
         self.dt = dt
         start(worker_count=worker_count)
+        self.num_slabs = resolve_slab_count(self._slab_request, worker_count)
         self.engine_pinned = PinnedCown(self.engine)
         sub_dt = dt / self.engine.num_substeps
         config = SolveConfig(self.engine.physics, self.engine.gravity, sub_dt,
