@@ -5,7 +5,7 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics import solver
+from bocphysics import solver, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
@@ -82,9 +82,8 @@ def test_solver_core_matches_engine_substep():
     engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
     cand_bodies, cand_pairs = build_group()
-    solver.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
-                               gravity, sub_dt, engine.num_substeps,
-                               engine.num_velocity_iterations, None)
+    xpbd.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
+                             gravity, sub_dt, engine.num_substeps, None)
 
     for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x
@@ -113,9 +112,8 @@ def test_polygon_group_core_matches_engine():
     engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
     cand_bodies, cand_pairs = build_group()
-    solver.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
-                               gravity, sub_dt, engine.num_substeps,
-                               engine.num_velocity_iterations, None)
+    xpbd.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
+                             gravity, sub_dt, engine.num_substeps, None)
 
     for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x

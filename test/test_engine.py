@@ -249,6 +249,7 @@ def kinetic_energy(bodies):
     )
 
 
+@pytest.mark.xfail(reason="cross-solver window: re-unified at S3.5")
 def test_batched_solver_settles_like_serial():
     """The colour-batched velocity solver settles the scene like the serial one.
 

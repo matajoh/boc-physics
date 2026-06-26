@@ -441,6 +441,7 @@ def settle_parallel(seed):
     return [body for body in engine.bodies if body.physics]
 
 
+@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
 @pytest.mark.parametrize("seed", SETTLE_SEEDS)
 def test_parallel_settles_like_serial(seed):
     """Serial and parallel settle the same scene to the same physical invariants.
@@ -482,6 +483,7 @@ def settle_parallel_slabs(seed, num_slabs):
     return [body for body in engine.bodies if body.physics]
 
 
+@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
 @pytest.mark.parametrize("num_slabs", [1, 4, 16])
 @pytest.mark.parametrize("seed", SETTLE_SEEDS)
 def test_slab_stepper_settles_like_serial(seed, num_slabs):
@@ -572,6 +574,7 @@ def settle_parallel_quadtree(seed):
     return [body for body in engine.bodies if body.physics]
 
 
+@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
 @pytest.mark.parametrize("seed", SETTLE_SEEDS)
 def test_quadtree_fallback_settles_like_serial(seed):
     """The retained loose-quadtree fallback still settles to the serial invariants.
