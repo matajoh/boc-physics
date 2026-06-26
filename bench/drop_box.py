@@ -204,13 +204,16 @@ def make_stepper(engine, num_slabs):
 
 def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
              spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
-             parallel=False, workers=None, uid_base=0, num_slabs=DEFAULT_PARTITION):
+             parallel=False, workers=None, uid_base=0, num_slabs=DEFAULT_PARTITION,
+             num_substeps=None):
     """Run one simulation, returning report rows, mean ms/frame, and body count."""
     from bocphysics.engine import PhysicsEngine
 
     Matrix.seed(seed)
+    substep_kwargs = {} if num_substeps is None else {"num_substeps": num_substeps}
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
-                           DetectionKind[detect.upper()], show_contacts=False)
+                           DetectionKind[detect.upper()], show_contacts=False,
+                           **substep_kwargs)
     engine.next_uid = uid_base
     for body in OPEN_BOX.build():
         engine.add_body(body)
@@ -274,7 +277,7 @@ def mean_std(values):
 
 def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
         runs: int, spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
-        parallel=False, workers=None, num_slabs=DEFAULT_PARTITION):
+        parallel=False, workers=None, num_slabs=DEFAULT_PARTITION, num_substeps=None):
     """Run the benchmark over several runs and print mean +/- std statistics."""
     label = f"parallel workers={workers}" if parallel else "serial"
     if parallel:
@@ -282,6 +285,8 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
             "quadtree" if num_slabs is None else f"slabs({num_slabs})")
         label = f"{label} {cut}"
     label = f"{label} {'batched' if solver.use_batched_solver else 'scalar'}"
+    if num_substeps is not None:
+        label = f"{label} substeps={num_substeps}"
     print(f"shapes={shapes} frames={frames} dt={dt} mode={mode} detect={detect} "
           f"runs={runs} spawn_frames={spawn_frames} seed={seed} [{label}]")
 
@@ -294,7 +299,7 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
                                              spawn_frames, seed + run_index,
                                              frames_to_snap, snapshot_dir,
                                              parallel, workers, run_index * UID_STRIDE,
-                                             num_slabs)
+                                             num_slabs, num_substeps)
         mean_ms_values.append(mean_ms)
         all_rows.append(rows)
 
@@ -348,6 +353,8 @@ def main():
                         help="Use the loose-quadtree partition fallback for --parallel")
     parser.add_argument("--batched", action="store_true",
                         help="Use the colour-batched velocity kernel (serial and parallel paths)")
+    parser.add_argument("--substeps", type=int, default=None,
+                        help="XPBD sub-steps per frame for the serial path (default: engine default)")
     args = parser.parse_args()
 
     # Snapshotted by ParallelStepper.begin(); must be set before the engine starts stepping.
@@ -375,7 +382,7 @@ def main():
     snapshot_frames = frozenset(int(f) for f in args.snapshot.split(",") if f.strip())
     run(args.shapes, args.frames, args.dt, args.mode, args.detect, args.report,
         args.runs, spawn_frames, args.seed, snapshot_frames, args.snapshot_dir,
-        args.parallel, args.workers, num_slabs)
+        args.parallel, args.workers, num_slabs, args.substeps)
 
 
 if __name__ == "__main__":

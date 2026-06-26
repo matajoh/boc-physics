@@ -303,31 +303,59 @@ def make_pyramid_scene(levels: int = 8) -> Scene:
     return Scene("pyramid", (floor_spec(),), tuple(dynamics))
 
 
+def sample_free_position(rng, placed, bound, attempts=4000):
+    """Rejection-sample a spawn centre clear of every already-placed shape.
+
+    Description:
+        Draws (x, y) inside the scatter column until the disc of the given
+        bounding radius clears every placed shape by a small margin, so no two
+        bodies start interpenetrating. Falls back to the last draw if the
+        attempt budget is exhausted (the domain is far from that crowded).
+    """
+    margin = 0.3
+    x = y = 0.0
+    for _ in range(attempts):
+        x = rng.uniform(-11.3, 11.3)
+        y = rng.uniform(-12, 6)
+        if all((x - px) ** 2 + (y - py) ** 2 >= (bound + pb + margin) ** 2
+               for px, py, pb in placed):
+            break
+    return x, y
+
+
 def make_golden_scene(seed: int = GOLDEN_SEED) -> Scene:
     """Build the deterministic seeded scatter the golden-master oracle settles.
 
     Description:
-        The rng draw order (x, y, angle, kind, then the shape's own dimensions)
-        is byte-for-byte the order the engine's golden-master builder used, so a
-        scene built here is bit-identical to the recorded oracle scene.
+        Shapes are rejection-sampled so none overlaps another at spawn -- deep
+        initial penetration would otherwise fling overlapping bodies apart into
+        runaway spin. A fixed seed keeps the whole scatter reproducible, so the
+        golden-master oracle settles to a stable recorded state.
     """
     rng = random.Random(seed)
     dynamics = []
-    for _ in range(24):
-        x = rng.uniform(-12, 12)
-        y = rng.uniform(-12, 6)
+    placed = []
+    while len(dynamics) < 24:
         angle = rng.uniform(0, 6.28)
         kind = rng.random()
         if kind < 0.4:
-            spec = BodySpec("circle", (200, 100, 50), (x, y), angle=angle,
-                            radius=rng.uniform(0.6, 1.2))
+            radius = rng.uniform(0.6, 1.2)
+            bound = radius
+            spec = BodySpec("circle", (200, 100, 50), (0, 0), angle=angle, radius=radius)
         elif kind < 0.7:
-            spec = BodySpec("rectangle", (50, 120, 200), (x, y), angle=angle,
-                            width=rng.uniform(1.2, 2.2), height=rng.uniform(1.2, 2.2))
+            width = rng.uniform(1.2, 2.2)
+            height = rng.uniform(1.2, 2.2)
+            bound = 0.5 * math.hypot(width, height)
+            spec = BodySpec("rectangle", (50, 120, 200), (0, 0), angle=angle,
+                            width=width, height=height)
         else:
-            spec = BodySpec("regular_polygon", (180, 60, 160), (x, y), angle=angle,
-                            num_sides=rng.randint(3, 6), radius=rng.uniform(0.8, 1.3))
-        dynamics.append(spec)
+            radius = rng.uniform(0.8, 1.3)
+            bound = radius
+            spec = BodySpec("regular_polygon", (180, 60, 160), (0, 0), angle=angle,
+                            num_sides=rng.randint(3, 6), radius=radius)
+        x, y = sample_free_position(rng, placed, bound)
+        dynamics.append(spec._replace(position=(x, y)))
+        placed.append((x, y, bound))
     statics = (floor_spec(),
                BodySpec("rectangle", (120, 120, 120), (-14, -2), width=2, height=24),
                BodySpec("rectangle", (120, 120, 120), (14, -2), width=2, height=24))

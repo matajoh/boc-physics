@@ -102,7 +102,9 @@ def test_circle_contact_carries_its_own_feature_id():
 
 def stack_engine() -> PhysicsEngine:
     """Build a three-box vertical stack resting on a static floor."""
-    engine = make_engine()
+    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+                           DetectionKind.QUADTREE, show_contacts=False,
+                           num_substeps=8)
     floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)
     engine.add_body(floor.move_to(Matrix.vector([0, 10])))
     for y in (7.9, 5.9, 3.9):
