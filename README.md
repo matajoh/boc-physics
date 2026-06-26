@@ -126,8 +126,8 @@ placement is drawn from a seeded Matrix PRNG (`--seed`, default 0): each of the
 five runs uses a different but deterministic seed, so the runs genuinely differ
 yet the whole sweep reproduces exactly. Timing still depends on the machine and
 load, so treat the tables below as a trend, not a contract — they were captured
-on an Intel Core i7-14700F (28 logical cores) under Linux, on CPython 3.14.4
-with bocpy 0.13.0.
+on an Intel Core i7-14700F (28 logical cores) with turbo boost disabled for
+stable timing, under Linux, on CPython 3.14.4 with bocpy 0.13.0.
 
 Streaming the drops (rather than releasing one clump) takes the scene through
 distinct stages — scattered singletons, then several separate piles, then one
@@ -154,18 +154,18 @@ Averaged over five runs, reported as mean ± one standard deviation.
 
 | Frame | ms/frame | Kinetic energy | Penetration |
 |------:|---------:|---------------:|------------:|
-|    30 |   0.17 ± 0.09 |     306.81 ± 26.06 |  2.0000 ± 0.0000 |
-|    60 |   0.60 ± 0.10 |    2175.21 ± 89.01 |  2.0000 ± 0.0000 |
-|    90 |   1.12 ± 0.28 |    7272.18 ± 179.91 |  2.1597 ± 0.2186 |
-|   120 |   1.32 ± 0.17 |   15100.79 ± 1293.80 |  2.0000 ± 0.0000 |
-|   150 |   1.81 ± 0.24 |   13636.04 ± 1002.83 |  2.0134 ± 0.0290 |
-|   180 |   3.60 ± 0.17 |   10370.42 ± 851.43 |  2.0342 ± 0.0504 |
-|   210 |   7.49 ± 0.99 |    7650.30 ± 1695.14 |  2.0807 ± 0.0385 |
-|   240 |  13.13 ± 1.03 |    6596.73 ± 1681.94 |  2.2137 ± 0.0820 |
-|   270 |  18.88 ± 1.96 |    2294.60 ± 572.75 |  2.5240 ± 0.0703 |
-|   300 |  24.21 ± 1.88 |     249.32 ± 73.20 |  2.4086 ± 0.0704 |
+|    30 |   0.18 ± 0.09 |     306.81 ± 26.06 |  2.0000 ± 0.0000 |
+|    60 |   0.63 ± 0.10 |    2175.21 ± 89.01 |  2.0000 ± 0.0000 |
+|    90 |   1.21 ± 0.31 |    7272.18 ± 179.91 |  2.1597 ± 0.2186 |
+|   120 |   1.45 ± 0.20 |   15100.79 ± 1293.80 |  2.0000 ± 0.0000 |
+|   150 |   2.01 ± 0.19 |   13636.04 ± 1002.83 |  2.0134 ± 0.0290 |
+|   180 |   3.94 ± 0.13 |   10370.42 ± 851.43 |  2.0342 ± 0.0504 |
+|   210 |   8.17 ± 1.01 |    7650.30 ± 1695.14 |  2.0807 ± 0.0385 |
+|   240 |  14.39 ± 1.31 |    6596.73 ± 1681.94 |  2.2137 ± 0.0820 |
+|   270 |  20.61 ± 2.73 |    2294.60 ± 572.75 |  2.5240 ± 0.0703 |
+|   300 |  25.93 ± 2.17 |     249.32 ± 73.20 |  2.4086 ± 0.0704 |
 
-Mean 7.2 ± 0.3 ms/frame over the five runs, with the substep solver that
+Mean 7.9 ± 0.5 ms/frame over the five runs, with the substep solver that
 separates sub-steps from velocity iterations. Cost climbs steadily as bodies
 accumulate and islands merge; kinetic energy peaks mid-run while shapes are
 still falling, then collapses as the pile settles. Penetration stays bounded
@@ -180,19 +180,19 @@ the baseline).
 
 | Frame | ms/frame | Kinetic energy | Penetration |
 |------:|---------:|---------------:|------------:|
-|    30 |   0.66 ± 0.10 |     306.36 ± 26.87 |  2.0000 ± 0.0000 |
-|    60 |   1.48 ± 0.08 |    2173.06 ± 91.38 |  2.0000 ± 0.0000 |
-|    90 |   1.98 ± 0.11 |    7281.24 ± 177.86 |  2.0971 ± 0.1330 |
-|   120 |   2.17 ± 0.22 |   15108.60 ± 1295.76 |  2.0000 ± 0.0000 |
-|   150 |   2.45 ± 0.16 |   13546.62 ± 931.44 |  2.0054 ± 0.0090 |
-|   180 |   3.36 ± 0.29 |   10219.06 ± 934.89 |  2.0552 ± 0.0401 |
-|   210 |   4.93 ± 0.06 |    7881.64 ± 1458.67 |  2.2432 ± 0.1091 |
-|   240 |   5.90 ± 0.16 |    6280.22 ± 1657.80 |  2.6335 ± 0.1314 |
-|   270 |   7.37 ± 0.44 |    2483.96 ± 653.92 |  3.3139 ± 0.2095 |
-|   300 |   8.12 ± 0.18 |     339.24 ± 92.44 |  3.3469 ± 0.2216 |
+|    30 |   0.73 ± 0.16 |     306.36 ± 26.87 |  2.0000 ± 0.0000 |
+|    60 |   1.66 ± 0.09 |    2173.06 ± 91.38 |  2.0000 ± 0.0000 |
+|    90 |   2.24 ± 0.18 |    7281.24 ± 177.86 |  2.0971 ± 0.1330 |
+|   120 |   2.44 ± 0.33 |   15108.60 ± 1295.76 |  2.0000 ± 0.0000 |
+|   150 |   2.87 ± 0.48 |   13546.62 ± 931.44 |  2.0054 ± 0.0090 |
+|   180 |   4.09 ± 0.68 |   10219.06 ± 934.89 |  2.0552 ± 0.0401 |
+|   210 |   5.84 ± 0.43 |    7887.23 ± 1493.26 |  2.2409 ± 0.1081 |
+|   240 |   6.80 ± 1.01 |    6190.65 ± 1865.09 |  2.5321 ± 0.0573 |
+|   270 |   8.43 ± 0.45 |    2629.97 ± 714.19 |  3.1137 ± 0.1779 |
+|   300 |   9.51 ± 0.73 |     394.28 ± 115.58 |  3.4338 ± 0.7303 |
 
-Mean 3.8 ± 0.1 ms/frame over the five runs — roughly 1.9x the serial baseline
-overall, and ~3.0x at the dense final frame (24.2 → 8.1 ms) where there is the
+Mean 4.5 ± 0.3 ms/frame over the five runs — roughly 1.8x the serial baseline
+overall, and ~2.7x at the dense final frame (25.9 → 9.5 ms) where there is the
 most independent work to fan out. The slab decomposition settles slightly
 looser than the serial sweep: penetration drifts toward ~3 late in the run
 rather than holding near 2, the expected order-of-resolution trade-off for

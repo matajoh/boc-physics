@@ -31,6 +31,8 @@ UID_STRIDE = 100_000
 
 DEFAULT_PARTITION = "default"
 
+SPAWN_MAX_TRIES = 5
+
 
 # These spawn helpers mirror tutorial_figures.py on purpose, keeping each bench a standalone script.
 def rand_int(low: int, high: int) -> int:
@@ -39,22 +41,40 @@ def rand_int(low: int, high: int) -> int:
 
 
 def spawn_one(engine):
-    """Drop a single randomly-shaped, randomly-rotated body high above the floor."""
+    """Drop a body high above the floor, retrying placement to avoid spawn overlaps."""
+    for _ in range(SPAWN_MAX_TRIES):
+        body = make_candidate()
+        if not spawn_overlaps(engine, body):
+            engine.add_body(body)
+            return
+
+
+def make_candidate():
+    """Build one randomly-shaped, randomly-rotated, randomly-placed candidate body."""
     x = Matrix.uniform(-11, 11)
     y = Matrix.uniform(-13, -7)
     angle = Matrix.uniform(0, 2 * math.pi)
     color = (rand_int(40, 255), rand_int(40, 255), rand_int(40, 255))
     kind = Matrix.uniform(0, 1)
     if kind < 0.4:
-        body = Circle.create(Matrix.uniform(0.6, 1.2), 2.0, color)
+        body = Circle.create(Matrix.uniform(0.4, 0.75), 2.0, color)
     elif kind < 0.7:
-        body = Polygon.create_rectangle(Matrix.uniform(1.2, 2.4),
-                                        Matrix.uniform(1.2, 2.4), 2.0, color)
+        body = Polygon.create_rectangle(Matrix.uniform(0.8, 1.5),
+                                        Matrix.uniform(0.8, 1.5), 2.0, color)
     else:
         body = Polygon.create_regular_polygon(rand_int(3, 8),
-                                              Matrix.uniform(0.8, 1.4), 2.0, color)
+                                              Matrix.uniform(0.55, 0.9), 2.0, color)
 
-    engine.add_body(body.move_to(Matrix.vector([x, y])).rotate_to(angle))
+    return body.move_to(Matrix.vector([x, y])).rotate_to(angle)
+
+
+def spawn_overlaps(engine, body) -> bool:
+    """Return True if the candidate body intersects any body already in the scene."""
+    for other in engine.bodies:
+        if detect_collision(body, other) is not None:
+            return True
+
+    return False
 
 
 def make_spawn_schedule(shapes: int, frames: int, spawn_frames: int):
@@ -128,7 +148,7 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
     import pyglet
 
     from bocphysics.engine import PhysicsEngine
-    from bocphysics.render import open_encoder
+    from bocphysics.render import draw_frame, draw_static_layer, open_encoder
 
     Matrix.seed(seed)
     engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
@@ -154,13 +174,18 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
             engine.step(dt)
             window.switch_to()
             window.clear()
+            static_batch = pyglet.graphics.Batch()
+            statics = [body for body in engine.bodies if body.render and not body.physics]
+            static_kept = draw_static_layer(statics, static_batch, camera)
+            static_batch.draw()
             batch = pyglet.graphics.Batch()
-            kept = engine.draw(batch, camera)
+            dynamics = [body for body in engine.bodies if body.render and body.physics]
+            kept = draw_frame(dynamics, engine.contacts, batch, camera)
             batch.draw()
             buffer = pyglet.image.get_buffer_manager().get_color_buffer()
             data = buffer.get_image_data().get_data("RGBA", buffer.width * 4)
             encoder.stdin.write(data)
-            del kept
+            del kept, static_kept
     finally:
         encoder.stdin.close()
         encoder.wait()

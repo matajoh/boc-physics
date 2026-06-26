@@ -70,13 +70,13 @@ def spawn_one(engine):
     color = vivid_color()
     kind = Matrix.uniform(0, 1)
     if kind < 0.4:
-        body = Circle.create(Matrix.uniform(0.6, 1.2), 2.0, color)
+        body = Circle.create(Matrix.uniform(0.4, 0.75), 2.0, color)
     elif kind < 0.7:
-        body = Polygon.create_rectangle(Matrix.uniform(1.2, 2.4),
-                                        Matrix.uniform(1.2, 2.4), 2.0, color)
+        body = Polygon.create_rectangle(Matrix.uniform(0.8, 1.5),
+                                        Matrix.uniform(0.8, 1.5), 2.0, color)
     else:
         body = Polygon.create_regular_polygon(rand_int(3, 8),
-                                              Matrix.uniform(0.8, 1.4), 2.0, color)
+                                              Matrix.uniform(0.55, 0.9), 2.0, color)
     engine.add_body(body.move_to(Matrix.vector([x, y])).rotate_to(angle))
 
 
