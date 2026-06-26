@@ -250,19 +250,18 @@ def kinetic_energy(bodies):
     )
 
 
-@pytest.mark.xfail(reason="cross-solver window: re-unified at S3.5")
 def test_batched_solver_settles_like_serial():
-    """The colour-batched velocity solver settles the scene like the serial one.
+    """The colour-batched XPBD solver settles the scene like the serial one.
 
     Description:
-        The batched kernel runs the same accumulated PGS as the serial solver but
-        visits manifolds in body-disjoint colour order rather than the serial
-        path's gravity-aligned apex-first order, so it is not bit-identical and
-        cannot share the golden master. With accumulation the two now settle to
-        nearly the same pile; this gate asserts the robust physical invariants:
-        nothing tunnels the floor, the pile reaches the same height to within a
-        tight band, and the batched solver never carries more energy than serial.
-        This is the settling-band parity gate.
+        The batched kernel runs the same XPBD physics as the serial solver but
+        visits constraints in body-disjoint colour order rather than the serial
+        path's build order, so across colours it is a valid re-linearisation, not
+        bit-identical, and cannot share the golden master. This gate asserts the
+        robust physical invariants: nothing tunnels the floor, the pile reaches
+        the same height to within a tight band, and the batched solver never
+        carries materially more energy than serial. This is the settling-band
+        parity gate.
     """
     reference = settle_golden(False)
     batched = settle_golden(True)

@@ -4,7 +4,7 @@ from typing import List, Set, Tuple
 
 from bocpy import Matrix
 
-from . import solver, xpbd
+from . import solver, xpbd, xpbd_kernel
 from .bodies import AABB, RigidBody
 from .config import DetectionKind, PhysicsMode
 from .detection import Detection
@@ -114,11 +114,10 @@ class PhysicsEngine:
             solver core so the parallel path runs the identical solve.
         """
         contacts = self.contacts if self.show_contacts else None
-        # --batched still runs the impulse kernel until S3.5 ports it to XPBD; the two are NOT yet comparable.
         if solver.use_batched_solver:
-            solver.solve_group_substep(self.physics, bodies, pairs,
-                                       self.gravity, sub_dt, self.num_substeps,
-                                       self.num_velocity_iterations, contacts)
+            xpbd_kernel.solve_group_substep(self.physics, bodies, pairs,
+                                            self.gravity, sub_dt, self.num_substeps,
+                                            contacts)
         else:
             xpbd.solve_group_substep(self.physics, bodies, pairs,
                                      self.gravity, sub_dt, self.num_substeps, contacts)
