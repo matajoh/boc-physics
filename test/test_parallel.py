@@ -15,7 +15,7 @@ import random
 from bocpy import Cown, Matrix, notice_seed, PinnedCown, quiesce, start, wait
 import pytest
 
-from bocphysics import geometry, parallel, solver, transport, xpbd
+from bocphysics import geometry, parallel, transport, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind, PhysicsMode
@@ -281,6 +281,7 @@ def test_colored_seam_order_is_input_order_independent():
 
 
 SETTLE_FRAMES = 120
+SETTLE_REST_FRAMES = 500
 SETTLE_SEEDS = [7, 20260608]
 SETTLE_SUBSTEPS = [4, 8]
 SETTLE_BODIES = 18
@@ -311,7 +312,7 @@ def settle_spawn_overlaps(engine, body):
 
 
 def build_settle_scene(engine, seed):
-    """Drop a deterministic NON-overlapping scatter of shapes onto a static floor.
+    """Drop a deterministic NON-overlapping scatter of shapes into a static bin.
 
     Description:
         Overlapping spawns inject huge penetration energy that the solver ejects
@@ -319,9 +320,16 @@ def build_settle_scene(engine, seed):
         different ejection boundaries and disagree on the survivor count. Each
         body is rejection-sampled against those already placed so none starts
         interpenetrating; both engines build the identical scene from the seed.
+        Side walls close the open floor into a bin so nothing slides off the
+        edge into free fall -- an escaping body never settles and keeps injecting
+        kinetic energy, which would mask the solver's own settled-energy band.
     """
     floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)
     engine.add_body(floor.move_to(Matrix.vector([0, 10])))
+    left_wall = Polygon.create_rectangle(2, 30, 2.0, (0, 100, 0), is_static=True)
+    engine.add_body(left_wall.move_to(Matrix.vector([-15, -4])))
+    right_wall = Polygon.create_rectangle(2, 30, 2.0, (0, 100, 0), is_static=True)
+    engine.add_body(right_wall.move_to(Matrix.vector([15, -4])))
     rng = random.Random(seed)
     for _ in range(SETTLE_BODIES):
         for _ in range(SETTLE_SPAWN_TRIES):
@@ -331,19 +339,57 @@ def build_settle_scene(engine, seed):
                 break
 
 
-def settle_serial(seed, num_substeps):
+def survivors(engine):
+    """The dynamic bodies still in the scene after a settle run."""
+    return [body for body in engine.bodies if body.physics]
+
+
+def max_penetration(engine):
+    """Deepest overlap across all body pairs in the settled scene, zero if disjoint.
+
+    Description:
+        Scans every unordered pair (skipping static-static, which never moves)
+        and returns the largest detect_collision depth. This is the settled
+        dynamic-penetration accuracy metric: a parallel solve that lets bodies
+        sink into the floor or each other more than serial fails the band.
+    """
+    bodies = engine.bodies
+    deepest = 0.0
+    for i in range(len(bodies)):
+        for j in range(i + 1, len(bodies)):
+            a, b = bodies[i], bodies[j]
+            if not (a.physics or b.physics):
+                continue
+            collision = detect_collision(a, b)
+            if collision is not None and collision.depth > deepest:
+                deepest = collision.depth
+    return deepest
+
+
+def kinetic_energy(engine):
+    """Total translational + rotational kinetic energy of the dynamic bodies."""
+    total = 0.0
+    for body in engine.bodies:
+        if not body.physics:
+            continue
+        v2 = body.linear_velocity.vecdot(body.linear_velocity)
+        total += 0.5 * body.mass * v2 + 0.5 * body.inertia * body.angular_velocity ** 2
+    return total
+
+
+def settle_serial(seed, num_substeps, frames=SETTLE_FRAMES):
     """Settle the scatter scene to rest on the serial engine."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False,
                            num_substeps=num_substeps)
     build_settle_scene(engine, seed)
-    for _ in range(SETTLE_FRAMES):
+    for _ in range(frames):
         engine.step(1 / 60)
 
-    return [body for body in engine.bodies if body.physics]
+    return engine
 
 
-def settle_parallel(seed, num_substeps):
+def settle_parallel(seed, num_substeps, frames=SETTLE_FRAMES):
     """Settle the same scene with the per-patch solve fanned across workers.
 
     Description:
@@ -357,11 +403,11 @@ def settle_parallel(seed, num_substeps):
     build_settle_scene(engine, seed)
     stepper = parallel.ParallelStepper(engine)
     stepper.begin()
-    for _ in range(SETTLE_FRAMES):
+    for _ in range(frames):
         if stepper.step():
             quiesce(30.0)
 
-    return [body for body in engine.bodies if body.physics]
+    return engine
 
 
 def settle_parallel_slabs(seed, num_slabs, num_substeps):
@@ -377,7 +423,7 @@ def settle_parallel_slabs(seed, num_slabs, num_substeps):
         if stepper.step():
             quiesce(30.0)
 
-    return [body for body in engine.bodies if body.physics]
+    return engine
 
 
 @pytest.mark.parametrize("num_slabs", [0, -1])
@@ -413,7 +459,7 @@ def settle_parallel_quadtree(seed, num_substeps):
         if stepper.step():
             quiesce(30.0)
 
-    return [body for body in engine.bodies if body.physics]
+    return engine
 
 
 def build_two_patch_scene(seed):
@@ -509,76 +555,76 @@ def build_seam_drop_scene(drop_speed):
     return x, left, right
 
 
-def seam_separation_speed(x, support):
-    """Post-solve separating speed of X from a support along their contact normal.
+def seam_separation_speed(x, normal):
+    """Separating speed of X along a pre-captured seam normal (positive = flying apart).
 
     Description:
-        Positive means the bodies are flying apart (a restitution bounce was
-        applied); near zero means the seam merely arrested the closing motion.
+        The XPBD position pass pushes X clear of the support, so the contact
+        normal is captured before the solve; a positive projection means a
+        restitution bounce was applied, near zero means the seam merely arrested
+        the approach.
     """
-    collision = solver.detect_collision(x, support)
-    return (-x.linear_velocity).vecdot(collision.normal)
+    return (-x.linear_velocity).vecdot(normal)
 
 
-def seam_outcomes(physics, drop_speed, iters=NUM_VEL):
-    """Return (monolithic, decomposed) seam separation speeds for one drop.
+def seam_outcomes(physics, drop_speed):
+    """Return (monolithic, decomposed) XPBD seam separation speeds for one drop.
 
     Description:
-        Monolithic prepares both contacts at the start velocity and solves them
-        together (the serial engine's order). Decomposed solves the interior
-        contact first, then prepares and solves the seam -- the parallel path,
-        where the seam's restitution target is sampled after the interior solve
-        has already damped X.
+        Monolithic builds both contacts at the start velocity and solves them in
+        one seam pass (the serial engine's order). Decomposed solves the interior
+        contact first, then builds and solves the seam on top -- the parallel
+        path, where the seam samples its restitution bias only after the interior
+        pass has already damped X. The seam normal is captured before the
+        position pass separates the bodies.
     """
     x, left, right = build_seam_drop_scene(drop_speed)
-    monolithic = solver.build_group_manifolds([(x, left), (x, right)], None)
-    solver.resolve_pair_list(physics, monolithic, iters)
-    mono = seam_separation_speed(x, right)
+    normal = detect_collision(x, right).normal
+    serial_seam_step(physics, [(x, left), (x, right)])
+    mono = seam_separation_speed(x, normal)
 
     x, left, right = build_seam_drop_scene(drop_speed)
-    intra = solver.build_group_manifolds([(x, left)], None)
-    solver.resolve_pair_list(physics, intra, iters)
-    seam = solver.build_group_manifolds([(x, right)], None)
-    solver.resolve_pair_list(physics, seam, iters)
-    deco = seam_separation_speed(x, right)
+    normal = detect_collision(x, right).normal
+    serial_seam_step(physics, [(x, left)])
+    serial_seam_step(physics, [(x, right)])
+    deco = seam_separation_speed(x, normal)
 
     return mono, deco
 
 
 def test_seam_decomposition_suppresses_restitution_above_threshold():
-    """The parallel seam order strips the restitution bounce a serial solve keeps.
+    """The parallel seam order strips most of the restitution a serial solve keeps.
 
     Description:
-        Characterisation lock, not an endorsement. For a body
-        crossing a seam above the restitution threshold, the monolithic serial
-        order applies a real bounce while the decomposed (intra-then-seam) order
-        samples the restitution target after the interior solve has damped the
-        body below the threshold, so the seam applies almost none. This pins the
+        Characterisation lock, not an endorsement. For a body crossing a seam
+        well above the XPBD restitution gate (2 * g * h), the monolithic serial
+        order applies a full bounce while the decomposed (interior-then-seam)
+        order samples the restitution bias after the interior pass has damped the
+        approach, so the seam rebuilds only a fraction of it. This pins the
         measured divergence so any future change to the seam ordering is caught.
     """
-    physics = Physics(PhysicsMode.FRICTION, restitution=0.5, restitution_threshold=1.0)
+    physics = Physics(PhysicsMode.FRICTION, restitution=0.5)
 
     mono, deco = seam_outcomes(physics, drop_speed=4.0)
-    assert mono > 1.0, "serial order should apply a restitution bounce at the seam"
-    assert abs(deco) < 0.1, "decomposed order suppresses the seam restitution"
+    assert mono > 1.0, "serial order applies a real restitution bounce at the seam"
+    assert deco < 0.2 * mono, "decomposed order keeps under a fifth of the bounce"
     assert mono - deco > 1.0, "the cross-seam restitution gap is large, not negligible"
 
 
 def test_seam_decomposition_matches_serial_below_threshold():
-    """Below the restitution threshold both orders agree: no bounce to diverge on.
+    """Below the restitution gate both orders agree: no bounce to diverge on.
 
     Description:
-        Restitution is gated to zero for closing speeds at or below the
-        threshold, so the seam-ordering hazard simply does not fire there. This
-        is the other half of the characterisation: the divergence is confined to
-        genuine above-threshold impacts, which is why resting stacks are immune.
-        The accumulated PGS solver leaves a slightly larger but still negligible
-        seam difference here (order 1e-3 m/s) than the per-iteration solver did.
+        The XPBD velocity pass zeroes restitution for approach speeds at or below
+        the gravity gate (2 * g * h), so the seam-ordering hazard does not fire
+        there. This is the other half of the characterisation: the divergence is
+        confined to genuine above-gate impacts, which is why resting stacks are
+        immune. The position-only seam leaves a negligible difference here.
     """
-    physics = Physics(PhysicsMode.FRICTION, restitution=0.5, restitution_threshold=1.0)
+    physics = Physics(PhysicsMode.FRICTION, restitution=0.5)
 
-    mono, deco = seam_outcomes(physics, drop_speed=0.5)
-    assert abs(mono - deco) < 2e-3, "below threshold the seam order barely matters"
+    mono, deco = seam_outcomes(physics, drop_speed=0.05)
+    assert abs(mono - deco) < 2e-3, "below the gate the seam order barely matters"
 
 
 class TestWorkerParity:
@@ -727,8 +773,10 @@ class TestSettle:
             reaches the same coarse height, and the system sheds the same kinetic
             energy. This is the serial-vs-parallel invariant parity gate.
         """
-        reference = settle_serial(seed, num_substeps)
-        fanned = settle_parallel(seed, num_substeps)
+        ref_engine = settle_serial(seed, num_substeps)
+        par_engine = settle_parallel(seed, num_substeps)
+        reference = survivors(ref_engine)
+        fanned = survivors(par_engine)
 
         assert len(fanned) == len(reference)
         assert all(body.position.y < 11 for body in fanned)
@@ -738,6 +786,29 @@ class TestSettle:
         ref_top = min(body.position.y for body in reference)
         par_top = min(body.position.y for body in fanned)
         assert par_top == pytest.approx(ref_top, abs=2.0)
+
+    @pytest.mark.parametrize("seed", SETTLE_SEEDS)
+    def test_parallel_rest_state_within_penetration_and_energy_band(self, seed):
+        """Settled parallel pile sinks and jitters no worse than the serial pile.
+
+        Description:
+            The invariant-parity test above stops at SETTLE_FRAMES, which lands
+            while the pile is still shedding impact energy. This is the numeric
+            accuracy go/no-go: it runs both solves to rest in the closed bin
+            (SETTLE_REST_FRAMES) at the production substep count and measures the
+            two quantities the parallel seam could degrade -- the deepest dynamic
+            penetration and the residual kinetic energy. The position-only seam
+            under-couples position into velocity, so its only failure mode here is
+            injecting energy serial does not; parallel must stay within a slack
+            penetration band of serial and below a small settled-energy floor.
+        """
+        ref_engine = settle_serial(seed, 8, frames=SETTLE_REST_FRAMES)
+        par_engine = settle_parallel(seed, 8, frames=SETTLE_REST_FRAMES)
+
+        ref_pen = max_penetration(ref_engine)
+        assert max_penetration(par_engine) <= ref_pen + max(0.05, 0.5 * ref_pen)
+        ref_ke = kinetic_energy(ref_engine)
+        assert kinetic_energy(par_engine) <= max(2.0, 2.0 * ref_ke)
 
     @pytest.mark.parametrize("num_substeps", SETTLE_SUBSTEPS)
     @pytest.mark.parametrize("num_slabs", [1, 4, 16])
@@ -756,8 +827,10 @@ class TestSettle:
             force one-body slabs (every interior pair becomes a seam) so the dense-
             seam and zero-seam schedules both run end-to-end through the solver.
         """
-        reference = settle_serial(seed, num_substeps)
-        fanned = settle_parallel_slabs(seed, num_slabs=num_slabs, num_substeps=num_substeps)
+        ref_engine = settle_serial(seed, num_substeps)
+        par_engine = settle_parallel_slabs(seed, num_slabs=num_slabs, num_substeps=num_substeps)
+        reference = survivors(ref_engine)
+        fanned = survivors(par_engine)
 
         assert len(fanned) == len(reference)
         assert all(body.position.y < 11 for body in fanned)
@@ -805,8 +878,10 @@ class TestSettle:
             survive, none tunnels the floor, the pile reaches the same coarse height,
             and the system sheds the same kinetic energy.
         """
-        reference = settle_serial(seed, num_substeps)
-        fanned = settle_parallel_quadtree(seed, num_substeps)
+        ref_engine = settle_serial(seed, num_substeps)
+        par_engine = settle_parallel_quadtree(seed, num_substeps)
+        reference = survivors(ref_engine)
+        fanned = survivors(par_engine)
 
         assert len(fanned) == len(reference)
         assert all(body.position.y < 11 for body in fanned)
