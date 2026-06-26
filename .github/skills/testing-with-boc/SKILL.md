@@ -1,6 +1,6 @@
 ---
 name: testing-with-boc
-description: "Write tests for bocpy Behavior-Oriented Concurrency code. Use when: writing pytest tests for @when behaviors, Cown scheduling, send/receive messaging, cown grouping, chained behaviors, exception propagation. Covers parameter-count rules, module-level class requirements, and the send/receive assertion pattern."
+description: "Write tests for bocpy Behavior-Oriented Concurrency code. Use when: writing pytest tests for @when behaviors, Cown scheduling, send/receive messaging, cown grouping, chained behaviors, exception propagation. Covers parameter-count rules, module-level class requirements, and the quiesce()+unwrap() result-reading pattern."
 ---
 
 # Testing with Behavior-Oriented Concurrency (BOC)
@@ -24,10 +24,12 @@ execute asynchronously on worker interpreters.
 |---------|-------------|
 | `Cown(value)` | A concurrently-owned wrapper. Behaviors receive exclusive temporal access to the cown's `.value`. |
 | `@when(*cowns)` | Decorator that schedules the function as a behavior. The decorator replaces the function with a `Cown` holding the return value. **The first N parameters bind to the N cowns; any extra values are captured as trailing parameters with defaults (`x=x`).** |
-| `send(tag, contents)` | Sends a cross-interpreter message with the given tag. |
-| `receive(tags, timeout)` | Blocks until a message with a matching tag arrives (or times out). Returns `(TIMEOUT, None)` on timeout. |
-| `TIMEOUT` | Sentinel string returned as the tag by `receive` when a timeout elapses. |
-| `wait(timeout)` | Blocks until all scheduled behaviors have completed. |
+| `quiesce(timeout)` | Block until all in-flight behaviors complete **without** tearing the runtime down — further `@when` calls work immediately afterwards. Raises `TimeoutError` if quiescence is not reached. This is the synchronization point a test waits on before reading results. |
+| `cown.unwrap()` | **Consume** and return a cown's value on the caller's thread, or re-raise a captured behavior exception verbatim. Call it only after `quiesce()` (or `wait()`); calling it while work is in flight raises `RuntimeError`. Consumes the cown, so a second `unwrap()` returns `None`. |
+| `wait(timeout)` | Block until all scheduled behaviors complete **and tear the runtime down**. Use it once in `teardown_class` to give each test class a fresh BOC environment. |
+| `notice_seed(key, value)` | Synchronously install a noticeboard entry from the primary interpreter (commits before returning). The way to seed read-mostly config before scheduling the behaviors that read it. |
+| `send(tag, contents)` / `receive(tags, timeout)` | Lower-level cross-interpreter messaging. No longer the primary way to assert on behavior results — prefer `quiesce()` + `unwrap()`. Still the right tool when testing the messaging API itself (Pattern 8). |
+| `TIMEOUT` | Sentinel returned as the tag by `receive` when a timeout elapses. |
 
 ### Cown count, parameter count, and captured extras
 
@@ -128,79 +130,108 @@ def test_accumulator_bad(self):
 - Install test dependencies: `pip install -e .[test]`
 - Run: `pytest -vv`
 
-## Pattern 1 — Assert Inside a Behavior via `send`/`receive`
+## Pattern 1 — Read Results with `quiesce()` + `unwrap()`
 
-Because behaviors run asynchronously, you **cannot** assert directly in the test
-body after scheduling a behavior. Instead, use `send` to ship the result out of
-the behavior and `receive` in the test to collect and verify it.
+Because behaviors run asynchronously, you **cannot** read a cown's result
+directly in the test body right after scheduling — the behavior hasn't run yet,
+and reading a cown while its producer is still in flight raises `RuntimeError`.
+The modern pattern is a two-step **synchronize, then read**:
+
+1. Schedule your behaviors with `@when`.
+2. Call `quiesce(timeout)` to block until every in-flight behavior has
+   completed. Unlike `wait()`, this leaves the runtime running, so the next
+   test can schedule again immediately.
+3. Read each result on the test thread with `cown.unwrap()`. `unwrap()`
+   **consumes** the cown and returns its value (or re-raises a captured
+   exception).
+
+Wrap each suite in a class whose `teardown_class` calls `wait()` — that tears
+the whole BOC runtime down once at the end of the class, giving the next class
+a fresh environment.
 
 ```python
-from bocpy import Cown, when, send, receive, drain, TIMEOUT, wait
+import pytest
+from bocpy import Cown, quiesce, wait, when
 
-RECEIVE_TIMEOUT = 10
+QUIESCE_TIMEOUT = 5
+
+
+def simple(x: Cown) -> Cown:
+    """Schedule a behavior that doubles a cown's value."""
+    @when(x)
+    def do_double(x):
+        return x.value * 2
+
+    return do_double          # the returned Cown holds the result
+
 
 class TestExample:
     @classmethod
     def teardown_class(cls):
-        wait()  # drain the scheduler after all tests
-
-    def receive_asserts(self, count=1):
-        """Helper: collect `count` assertion messages and fail on mismatch.
-
-        Uses a timeout so that if a behavior never fires (e.g. due to a
-        parameter-count mismatch in @when) the test fails quickly instead
-        of hanging forever. The "assert" queue is always drained before
-        returning so leftover messages from a failing test do not leak
-        into subsequent tests in CI.
-        """
-        failed = None
-        timed_out = False
-        try:
-            for _ in range(count):
-                result = receive("assert", RECEIVE_TIMEOUT)
-                if result[0] == TIMEOUT:
-                    timed_out = True
-                    break
-                _, (actual, expected) = result
-                if failed is None and actual != expected:
-                    failed = (actual, expected)
-        finally:
-            drain("assert")
-
-        assert not timed_out, (
-            "Timed out waiting for an 'assert' message from a behavior. "
-            "Check that every @when arg count matches the decorated "
-            "function's parameter count."
-        )
-        if failed is not None:
-            actual, expected = failed
-            assert actual == expected, f"expected {expected!r}, got {actual!r}"
+        wait()                # tear the runtime down after the whole suite
 
     def test_double(self):
         x = Cown(3)
+        result = simple(x)
 
-        @when(x)
-        def result(x):
-            return x.value * 2
-
-        @when(result)
-        def _(r):
-            send("assert", (r.value, 6))
-
-        self.receive_asserts()
+        quiesce(QUIESCE_TIMEOUT)
+        assert result.unwrap() == 6
 ```
 
 ### Why this pattern?
 
-`@when` returns immediately — the behavior hasn't executed yet. The test thread
-must block on `receive("assert")` to synchronize with the behavior's completion.
-Calling `wait()` in `teardown_class` ensures any remaining work finishes before
-the next test class starts.
+`@when` returns immediately — the behavior hasn't executed yet, so a plain
+`result.value` read would race the worker (and `unwrap()` guards against it by
+raising `RuntimeError` while work is in flight). `quiesce()` is the
+synchronization barrier: once it returns, every scheduled behavior is done and
+its result cown is safe to `unwrap()`. Because `quiesce()` does **not** tear the
+runtime down, you can interleave `quiesce()`/`unwrap()` checkpoints with more
+`@when` scheduling in the same test. The single `wait()` in `teardown_class`
+resets the BOC system so behavior registries and worker caches don't leak
+between test classes.
+
+### `unwrap()` semantics
+
+| Behavior | `unwrap()` result |
+|----------|-------------------|
+| Returned a value | That value. The cown is emptied to `None`. |
+| Raised an exception | The exception, **re-raised verbatim** on the caller — use `with pytest.raises(...)`. |
+| Returned an `Exception` object (not raised) | That object, as an ordinary value (no re-raise). |
+| Already unwrapped once | `None` — `unwrap()` consumes the cown. |
+| Still in flight (no `quiesce`/`wait` yet) | Raises `RuntimeError("still in flight")`. |
+
+Consuming is also what makes move-typed values (e.g. `Matrix`) usable after the
+call: the cown stops aliasing the value's single backing store, so ownership
+moves to the caller's interpreter.
 
 ## Pattern 2 — Testing Nested / Chained Behaviors
 
-Behaviors can schedule further behaviors. Use multiple `send` calls and
-`receive_asserts(count)` to verify each step in the chain.
+Behaviors can schedule further behaviors, and a behavior chained on another's
+result cown runs after it. Schedule the whole chain, `quiesce()` once, then
+`unwrap()` the final result cown.
+
+```python
+def test_behavior_chain(self):
+    x = Cown(2)
+
+    @when(x)
+    def step1(x):
+        return x.value + 3        # 5
+
+    @when(step1)
+    def step2(s1):
+        return s1.value * 4       # 20
+
+    @when(step2)
+    def step3(s2):
+        return s2.value - 7       # 13
+
+    quiesce(QUIESCE_TIMEOUT)
+    assert step3.unwrap() == 13
+```
+
+To inspect intermediate steps, read more than one result cown after the same
+`quiesce()`:
 
 ```python
 def test_nested(self):
@@ -208,31 +239,34 @@ def test_nested(self):
 
     @when(x)
     def step1(x):
-        x.value *= 2          # x is now 2
+        x.value *= 2              # x is now 2
 
         @when(x)
         def step2(x):
-            x.value *= 3      # x is now 6
+            x.value *= 3          # x is now 6
 
         return step2
 
-    @when(x, step1)
-    def check(x, s):
-        send("assert", (x.value, 2))
-
-        @when(x, s.value)     # s.value is the inner Cown
-        def deep_check(x, _):
-            send("assert", (x.value, 6))
-
-    self.receive_asserts(2)
+    quiesce(QUIESCE_TIMEOUT)
+    assert x.unwrap() == 6
 ```
 
 ## Pattern 3 — Multi-Cown Coordination
 
 Pass multiple cowns to `@when` to atomically operate on several pieces of data.
-The scheduler guarantees deadlock-free acquisition.
+The scheduler guarantees deadlock-free acquisition. Read each cown back through
+its own one-cown reader behavior, then `unwrap()`.
 
 ```python
+def read(c: Cown) -> Cown:
+    """Schedule a behavior that returns a cown's value."""
+    @when(c)
+    def do_read(c):
+        return c.value
+
+    return do_read
+
+
 def test_transfer(self):
     x = Cown(100)
     y = Cown(0)
@@ -242,15 +276,12 @@ def test_transfer(self):
         y.value += 50
         x.value -= 50
 
-    @when(x)
-    def _(x):
-        send("assert", (x.value, 50))
+    x_after = read(x)
+    y_after = read(y)
 
-    @when(y)
-    def _(y):
-        send("assert", (y.value, 50))
-
-    self.receive_asserts(2)
+    quiesce(QUIESCE_TIMEOUT)
+    assert x_after.unwrap() == 50
+    assert y_after.unwrap() == 50
 ```
 
 ## Pattern 4 — Cown Grouping
@@ -301,20 +332,38 @@ def group_single_group(g0: list[Cown[int]], single: Cown[int], g1: list[Cown[int
 
 ### Testing grouped results
 
-The results are all cowns, so use the same `send`/`receive` pattern. You can
-itself pass a list of result cowns as a group to `@when`:
+The results are all cowns, so use the same `quiesce()` + `unwrap()` pattern. You
+can pass a list of result cowns as a group to a reader `@when`, or just
+`unwrap()` each one after quiescing:
 
 ```python
 def test_cown_grouping(self):
     expected = 45
     results = [group_sum, group_then_single, single_then_group, group_single_group]
 
-    @when(results)
-    def check(results: list[Cown]):
-        for r in results:
-            send("assert", (r.value, expected))
+    quiesce(QUIESCE_TIMEOUT)
+    for r in results:
+        assert r.unwrap() == expected
+```
 
-    self.receive_asserts(len(results))
+Mutating cowns inside a group sticks; read them back through a follow-up
+behavior:
+
+```python
+def test_grouped_cown_mutation(self):
+    cowns = [Cown(i) for i in range(5)]
+
+    @when(cowns)
+    def double_all(group: list[Cown[int]]):
+        for c in group:
+            c.value *= 2
+
+    @when(cowns)
+    def verify(group: list[Cown[int]]):
+        return [c.value for c in group]
+
+    quiesce(QUIESCE_TIMEOUT)
+    assert verify.unwrap() == [i * 2 for i in range(5)]
 ```
 
 ### Key rules for grouping
@@ -328,10 +377,9 @@ def test_cown_grouping(self):
 
 ## Pattern 5 — Exception Propagation
 
-If a behavior raises, the exception is captured in the returned cown's `.value`
-**and** the cown's `.exception` flag is set to `True`. This lets downstream
-behaviors distinguish a thrown exception from a value that just happens to be
-an `Exception` instance returned normally.
+If a behavior raises, the exception is captured in the result cown and the
+cown's `.exception` flag is set to `True`. From the test thread, `unwrap()`
+**re-raises** that exception verbatim, so assert with `pytest.raises`:
 
 ```python
 def test_exception_in_behavior(self):
@@ -339,41 +387,43 @@ def test_exception_in_behavior(self):
 
     @when(x)
     def bad(x):
-        x.value /= 0          # ZeroDivisionError
+        x.value /= 0              # ZeroDivisionError
 
-    @when(bad)
-    def _(b):
-        send("assert", (b.exception, True))
-        send("assert", (isinstance(b.value, ZeroDivisionError), True))
-        b.value = None         # writing .value clears the exception flag
+    quiesce(QUIESCE_TIMEOUT)
+    with pytest.raises(ZeroDivisionError):
+        bad.unwrap()
+```
 
-    self.receive_asserts(2)
+A consumed exception is cleared, so a second `unwrap()` returns `None`. An
+`Exception` object that a behavior *returns* (rather than raises) is an ordinary
+value — `unwrap()` hands it back without re-raising:
 
-
-def test_returned_exception_is_not_flagged(self):
-    """An Exception object *returned* from a behavior is just a value."""
+```python
+def test_returned_exception_is_a_value(self):
     x = Cown(1)
 
     @when(x)
     def returns_exc(x):
         return ValueError("not really an error")
 
-    @when(returns_exc)
-    def _(r):
-        send("assert", (r.exception, False))
-        send("assert", (isinstance(r.value, ValueError), True))
-
-    self.receive_asserts(2)
+    quiesce(QUIESCE_TIMEOUT)
+    result = returns_exc.unwrap()     # returned, not raised -> no re-raise
+    assert isinstance(result, ValueError)
 ```
+
+> **Caveat — no bare `assert` inside a behavior.** pytest rewrites `assert`
+> statements to reference a module-global `@pytest_ar` helper. The marshalled
+> code object carries that reference but the worker interpreter's namespace
+> lacks it, so a bare `assert` inside a `@when` body crashes with a confusing
+> `NameError` on the worker. Raise an explicit exception instead
+> (`raise AssertionError(...)`), or return the value and assert on it after
+> `unwrap()`.
 
 Notes:
 
 - Writing `cown.value = ...` from inside a behavior **clears** `.exception`.
-- `cown.exception` is also writable inside a behavior, in case you want to
-  manually mark or unmark a cown as carrying an error.
-- Always assert on `.exception` before `isinstance(.value, Exception)` —
-  otherwise a behavior that legitimately returns an `Exception` will be
-  indistinguishable from one that raised.
+- `cown.exception` is also readable/writable inside a behavior if you want to
+  inspect or manually mark error state before the result reaches the test.
 
 ## Pattern 6 — Noticeboard
 
@@ -383,18 +433,29 @@ return a snapshot taken once per behavior execution.
 
 | Function | Purpose |
 |----------|---------|
-| `notice_write(key, value)` | Non-blocking write. |
+| `notice_write(key, value)` | Non-blocking write from inside a behavior. |
+| `notice_seed(key, value)` | **Primary-interpreter only**, synchronous write that commits before returning. Seed read-mostly config *before* scheduling the behaviors that read it. Raises `RuntimeError` if called inside a behavior. |
 | `notice_update(key, fn, default=None)` | Atomic read-modify-write. `fn` and `default` must be picklable. Returning `REMOVED` deletes the entry. |
 | `notice_delete(key)` | Non-blocking delete. |
 | `noticeboard()` | Read-only mapping — snapshot of the noticeboard, cached for the duration of the current behavior. |
 | `notice_read(key, default=None)` | Convenience: one key from the snapshot. |
+
+From a test thread, capture a point-in-time snapshot with the `noticeboard=True`
+flag on `quiesce()` — it returns a plain `dict` reflecting every write committed
+by a behavior that finished before the quiesce point:
+
+```python
+snap = quiesce(QUIESCE_TIMEOUT, noticeboard=True)
+assert snap.get("key") == expected
+```
 
 ### Key rule: snapshot per behavior
 
 Within a single behavior, `noticeboard()` and `notice_read()` always return
 data from the **same** snapshot — even if other behaviors write in the
 meantime. To see a write made by another behavior, schedule a follow-up
-behavior (typically by chaining via a cown returned from `@when`).
+behavior (typically by chaining via a cown returned from `@when`), or read the
+snapshot from the test with `quiesce(..., noticeboard=True)`.
 
 ```python
 def test_noticeboard_roundtrip(self):
@@ -404,13 +465,8 @@ def test_noticeboard_roundtrip(self):
     def step1(x):
         notice_write("greeting", "hello")
 
-    # The chain on `step1` ensures step2 runs *after* the write has been
-    # applied and step2's snapshot sees it.
-    @when(x, step1)
-    def step2(x, _):
-        send("assert", (notice_read("greeting"), "hello"))
-
-    self.receive_asserts()
+    snap = quiesce(QUIESCE_TIMEOUT, noticeboard=True)
+    assert snap.get("greeting") == "hello"
 ```
 
 ### Atomic update
@@ -444,11 +500,8 @@ class TestCounter:
             notice_update("count", partial(_bump, by=5))
             notice_update("count", partial(add, 3))
 
-        @when(x, bump)
-        def check(x, _):
-            send("assert", (notice_read("count"), 8))
-
-        receive_asserts()
+        snap = quiesce(QUIESCE_TIMEOUT, noticeboard=True)
+        assert snap.get("count") == 8
 ```
 
 ### Delete via `REMOVED`
@@ -472,11 +525,8 @@ def test_remove_via_update(self):
         notice_update("lives", _drop_if_zero)   # 1 -> 0
         notice_update("lives", _drop_if_zero)   # 0 -> REMOVED
 
-    @when(x, tick)
-    def check(x, _):
-        send("assert", ("lives" in noticeboard(), False))
-
-    self.receive_asserts()
+    snap = quiesce(QUIESCE_TIMEOUT, noticeboard=True)
+    assert "lives" not in snap
 ```
 
 ### Common noticeboard pitfalls
@@ -485,7 +535,7 @@ def test_remove_via_update(self):
 |---------|-----|
 | Reading a value back inside the **same** behavior that wrote it | The snapshot was taken at the start of the behavior. Chain a follow-up `@when` to observe the write. |
 | Passing a lambda or closure to `notice_update` | They are not picklable. Use a module-level function with `functools.partial`, or an `operator` function. |
-| Asserting in the test body that `noticeboard()` contains a key | Read inside a behavior and `send` the result out — `noticeboard()` and `notice_read()` outside any behavior return a snapshot that is never refreshed. |
+| Asserting in the test body that `noticeboard()` contains a key | Call `noticeboard()`/`notice_read()` outside a behavior returns a never-refreshed snapshot. Read the live state with `quiesce(QUIESCE_TIMEOUT, noticeboard=True)` instead. |
 | Writing more than 64 distinct keys | Excess writes are dropped with a logged warning — they do **not** raise. Keep tests within the limit (and `notice_delete` keys you no longer need). |
 
 ## Pattern 7 — Parameterized Tests
@@ -499,16 +549,15 @@ def test_fibonacci(self, n):
     result = fib_parallel(n)
     expected = fib_sequential(n)
 
-    @when(result)
-    def _(r):
-        send("assert", (r.value, expected))
-
-    self.receive_asserts()
+    quiesce(QUIESCE_TIMEOUT)
+    assert result.unwrap() == expected
 ```
 
 ## Pattern 8 — Testing `send`/`receive` Messaging Directly
 
-For code that uses the lower-level messaging API without behaviors:
+`send`/`receive` are no longer the way to assert on behavior results (use
+`quiesce()` + `unwrap()` for that). They remain the right tool when the code
+under test uses the cross-interpreter messaging API itself:
 
 ```python
 from bocpy import send, receive, TIMEOUT
@@ -550,11 +599,8 @@ def test_object_in_cown(self):
         def _(c):
             c.value.increment()
 
-    @when(c)
-    def _(c):
-        send("assert", (c.value.n, 10))
-
-    self.receive_asserts()
+    quiesce(QUIESCE_TIMEOUT)
+    assert c.unwrap().n == 10
 ```
 
 ## Common Pitfalls
@@ -563,12 +609,13 @@ def test_object_in_cown(self):
 |---------|-----|
 | **Parameter count mismatch in `@when`** | The first N parameters must match the N `@when` cowns; any extra value must be a **trailing parameter with a default** (`x=x`). A closure over a free variable raises `SyntaxError` at decoration. |
 | **Classes/functions defined inside a test** | Behaviors run in sub-interpreters that import the module. Define all classes and functions used in behaviors at **module level** so workers can resolve them. |
-| Asserting in the test body right after `@when` | The behavior hasn't run yet. Use `send`/`receive` to synchronize. |
-| `receive` without a timeout | If a behavior crashes silently, the test hangs forever. Always pass a timeout (e.g. `RECEIVE_TIMEOUT = 10`) and assert the result is not `TIMEOUT`. |
-| Forgetting `wait()` in teardown | Pending behaviors may leak into the next test class. Always call `wait()` in `teardown_class`. |
-| Reading `cown.value` outside a behavior | A cown must be acquired first. Read values inside `@when` or use `send`/`receive`. |
+| Reading a result right after `@when` | The behavior hasn't run yet, and `unwrap()` raises `RuntimeError` while work is in flight. Call `quiesce(timeout)` first, then `unwrap()`. |
+| `unwrap()` returning `None` unexpectedly | `unwrap()` **consumes** the cown; a second call returns `None`. Capture the value in a local on the first call if you need it twice. |
+| Bare `assert` inside a `@when` body | pytest's assert rewriting references a `@pytest_ar` global the worker lacks — it crashes with `NameError`. Raise an explicit exception, or return the value and assert after `unwrap()`. |
+| Forgetting `wait()` in teardown | Behavior registries and worker caches leak into the next test class. Always call `wait()` in `teardown_class`. |
+| Reading `cown.value` outside a behavior | A cown must be acquired first. Read values inside `@when`, or `unwrap()` on the test thread after `quiesce()`/`wait()`. |
 | Trying to capture a loop variable by closure | A behavior runs in another interpreter and cannot close over free variables (raises `SyntaxError`). Capture it as a trailing default instead: `def _(c, i=i): ...`. |
-| Mismatched `receive_asserts` count | The count must match the exact number of `send("assert", ...)` calls expected. |
+| `quiesce()` / `receive()` without a timeout | A crashed or never-firing behavior hangs the test forever. Always pass a timeout (e.g. `QUIESCE_TIMEOUT = 5`); `quiesce` raises `TimeoutError` if quiescence is not reached. |
 | Non-XIData-compatible objects in cowns across interpreters | Stick to built-in types or objects that support cross-interpreter data. |
 | Test function names with uppercase letters (N802) | Test names must be lowercase. E.g., `test_t_equals_transpose`, **not** `test_T_equals_transpose`, even when testing a property like `.T`. |
 | Assigning `Cown(m)` to an unused variable (F841) | When the return value isn't needed (e.g., releasing a resource), use bare `Cown(m)` without assignment. |

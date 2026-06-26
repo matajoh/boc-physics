@@ -15,8 +15,9 @@ import random
 from bocpy import Cown, Matrix, notice_seed, PinnedCown, quiesce, start, wait
 import pytest
 
-from bocphysics import geometry, parallel, solver, transport
+from bocphysics import geometry, parallel, solver, transport, xpbd
 from bocphysics.bodies import Circle, Polygon
+from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
 from bocphysics.physics import Physics
@@ -36,17 +37,6 @@ def allocate_uids(count):
     base = _next_uid
     _next_uid += count
     return list(range(base, base + count))
-
-
-@pytest.fixture(scope="module", autouse=True)
-def boc_runtime():
-    """Start one runtime for the module, seed the set-once config, stop at teardown."""
-    start(worker_count=4)
-    notice_seed(parallel.CONFIG_KEY,
-                parallel.SolveConfig(Physics(PhysicsMode.FRICTION), GRAVITY,
-                                     SUB_DT, NUM_VEL, False))
-    yield
-    wait()
 
 
 class FakeEngine:
@@ -188,16 +178,12 @@ def randomise_block(rng, bodies):
     return block
 
 
-def serial_intra_reference(dynamics, floor, interior_uid_pairs, batched=False):
+def serial_intra_reference(dynamics, floor, interior_uid_pairs):
     """Run one intra sub-step serially and return the resulting state block."""
     physics = Physics(PhysicsMode.FRICTION)
     by_uid = {body.uid: body for body in dynamics + [floor]}
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_uid_pairs]
-    solver.integrate_block(dynamics, GRAVITY, SUB_DT)
-    manifolds = solver.build_group_manifolds(pairs, None)
-    for manifold in manifolds:
-        solver.separate_manifold(manifold)
-    solver.resolve_pair_list(physics, manifolds, NUM_VEL, batched)
+    xpbd.solve_substep(physics, dynamics, pairs, GRAVITY, SUB_DT)
     return transport.pack_state(dynamics)
 
 
@@ -206,10 +192,9 @@ def serial_boundary_reference(dynamics_a, dynamics_b, boundary_uid_pairs):
     physics = Physics(PhysicsMode.FRICTION)
     by_uid = {body.uid: body for body in dynamics_a + dynamics_b}
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in boundary_uid_pairs]
-    manifolds = solver.build_group_manifolds(pairs, None)
-    for manifold in manifolds:
-        solver.separate_manifold(manifold)
-    solver.resolve_pair_list(physics, manifolds, NUM_VEL)
+    constraints = xpbd.build_contacts(pairs)
+    lambdas = xpbd.solve_positions(constraints)
+    xpbd.solve_velocities(physics, constraints, lambdas, SUB_DT, GRAVITY)
     return transport.pack_state(dynamics_a), transport.pack_state(dynamics_b)
 
 
@@ -230,95 +215,6 @@ def assert_body_matches_row(body, block, row):
     assert body.linear_velocity.y == block[row, transport.VELOCITY.start + 1]
     assert body.angle == block[row, transport.ANGLE]
     assert body.angular_velocity == block[row, transport.SPIN]
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_intra_behaviour_matches_serial(seed):
-    """One intra sub-step through a worker is bit-exact with the serial core."""
-    dynamics, floor, interior_uid_pairs, geom = build_patch_scene(seed)
-    notice_seed(parallel.GEOMETRY_KEY, geom)
-    state_cown = Cown(transport.pack_state(dynamics))
-    pairs_cown = Cown(transport.pack_pairs(interior_uid_pairs))
-
-    reference = serial_intra_reference(dynamics, floor, interior_uid_pairs)
-    parallel.schedule_intra(state_cown, pairs_cown)
-    quiesce(30.0)
-
-    assert_blocks_equal(state_cown.unwrap(), reference)
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_boundary_behaviour_matches_serial(seed):
-    """One boundary sub-step through a worker is bit-exact with the serial core."""
-    dyn_a, dyn_b, boundary_uid_pairs, geom = build_boundary_scene(seed)
-    notice_seed(parallel.GEOMETRY_KEY, geom)
-    state_a = Cown(transport.pack_state(dyn_a))
-    state_b = Cown(transport.pack_state(dyn_b))
-    pairs_cown = Cown(transport.pack_pairs(boundary_uid_pairs))
-
-    ref_a, ref_b = serial_boundary_reference(dyn_a, dyn_b, boundary_uid_pairs)
-    parallel.schedule_boundary(state_a, state_b, pairs_cown)
-    quiesce(30.0)
-
-    assert_blocks_equal(state_a.unwrap(), ref_a)
-    assert_blocks_equal(state_b.unwrap(), ref_b)
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_intra_behaviour_uses_batched_flag(seed):
-    """With config.batched set, the worker runs the batched kernel, not the loop.
-
-    Description:
-        The batched flag rides the noticeboard config, so a worker honours it the
-        same way the serial path honours the module global. Resolving the same
-        scene serially through the batched kernel and through the worker must give
-        the identical block: both call resolve_batched, so the result is exact
-        regardless of colour order. Restores the shared config so later tests keep
-        the serial loop.
-    """
-    dynamics, floor, interior_uid_pairs, geom = build_patch_scene(seed)
-    notice_seed(parallel.GEOMETRY_KEY, geom)
-    state_cown = Cown(transport.pack_state(dynamics))
-    pairs_cown = Cown(transport.pack_pairs(interior_uid_pairs))
-
-    reference = serial_intra_reference(dynamics, floor, interior_uid_pairs,
-                                       batched=True)
-    notice_seed(parallel.CONFIG_KEY,
-                parallel.SolveConfig(Physics(PhysicsMode.FRICTION), GRAVITY,
-                                     SUB_DT, NUM_VEL, True))
-    try:
-        parallel.schedule_intra(state_cown, pairs_cown)
-        quiesce(30.0)
-    finally:
-        notice_seed(parallel.CONFIG_KEY,
-                    parallel.SolveConfig(Physics(PhysicsMode.FRICTION), GRAVITY,
-                                         SUB_DT, NUM_VEL, False))
-
-    assert_blocks_equal(state_cown.unwrap(), reference)
-
-
-def test_pinned_writeback_scatters_every_block_on_main():
-    """The pinned writeback scatters all patch blocks onto the real bodies once."""
-    rng = random.Random(0)
-    uids = allocate_uids(6)
-    bodies = [build_writeback_dynamic(rng, uid) for uid in uids]
-    engine = FakeEngine(bodies)
-    by_uid = {body.uid: body for body in bodies}
-
-    block_a = randomise_block(rng, bodies[:4])
-    block_b = randomise_block(rng, bodies[4:])
-    state_cowns = [Cown(block_a), Cown(block_b)]
-    engine_pinned = PinnedCown(engine)
-
-    parallel.schedule_writeback(state_cowns, engine_pinned)
-    quiesce(30.0)
-
-    for block_cown in state_cowns:
-        block = block_cown.unwrap()
-        for row, uid in enumerate(transport.uids_of(block)):
-            assert_body_matches_row(by_uid[uid], block, row)
-
-    assert engine.removed == [6], "remove_outside must run exactly once on main"
 
 
 def seam_colors(order, num_patches):
@@ -386,34 +282,60 @@ def test_colored_seam_order_is_input_order_independent():
 
 SETTLE_FRAMES = 120
 SETTLE_SEEDS = [7, 20260608]
+SETTLE_SUBSTEPS = [4, 8]
+SETTLE_BODIES = 18
+SETTLE_SPAWN_TRIES = 16
+
+
+def settle_candidate(rng):
+    """Build one randomly-shaped, randomly-placed settle candidate from the rng."""
+    x = rng.uniform(-13, 13)
+    y = rng.uniform(-16, 6)
+    angle = rng.uniform(0, 6.28)
+    kind = rng.random()
+    if kind < 0.4:
+        body = Circle.create(rng.uniform(0.6, 1.2), 2.0, (200, 100, 50))
+    elif kind < 0.7:
+        body = Polygon.create_rectangle(rng.uniform(1.2, 2.2),
+                                        rng.uniform(1.2, 2.2), 2.0, (50, 120, 200))
+    else:
+        body = Polygon.create_regular_polygon(rng.randint(3, 6),
+                                              rng.uniform(0.8, 1.3), 2.0, (180, 60, 160))
+
+    return body.move_to(Matrix.vector([x, y])).rotate_to(angle)
+
+
+def settle_spawn_overlaps(engine, body):
+    """Return True if the candidate intersects any body already in the scene."""
+    return any(detect_collision(body, other) is not None for other in engine.bodies)
 
 
 def build_settle_scene(engine, seed):
-    """Drop a deterministic seeded scatter of shapes onto a static floor."""
+    """Drop a deterministic NON-overlapping scatter of shapes onto a static floor.
+
+    Description:
+        Overlapping spawns inject huge penetration energy that the solver ejects
+        as chaotic spin, which makes the serial and parallel linearizations cross
+        different ejection boundaries and disagree on the survivor count. Each
+        body is rejection-sampled against those already placed so none starts
+        interpenetrating; both engines build the identical scene from the seed.
+    """
     floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)
     engine.add_body(floor.move_to(Matrix.vector([0, 10])))
     rng = random.Random(seed)
-    for _ in range(24):
-        x = rng.uniform(-12, 12)
-        y = rng.uniform(-12, 6)
-        angle = rng.uniform(0, 6.28)
-        kind = rng.random()
-        if kind < 0.4:
-            body = Circle.create(rng.uniform(0.6, 1.2), 2.0, (200, 100, 50))
-        elif kind < 0.7:
-            body = Polygon.create_rectangle(rng.uniform(1.2, 2.2),
-                                            rng.uniform(1.2, 2.2), 2.0, (50, 120, 200))
-        else:
-            body = Polygon.create_regular_polygon(rng.randint(3, 6),
-                                                  rng.uniform(0.8, 1.3), 2.0, (180, 60, 160))
-
-        engine.add_body(body.move_to(Matrix.vector([x, y])).rotate_to(angle))
+    for _ in range(SETTLE_BODIES):
+        for _ in range(SETTLE_SPAWN_TRIES):
+            body = settle_candidate(rng)
+            if not settle_spawn_overlaps(engine, body):
+                engine.add_body(body)
+                break
 
 
-def settle_serial(seed):
+def settle_serial(seed, num_substeps):
     """Settle the scatter scene to rest on the serial engine."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+                           DetectionKind.LOOSE_QUADTREE, show_contacts=False,
+                           num_substeps=num_substeps)
     build_settle_scene(engine, seed)
     for _ in range(SETTLE_FRAMES):
         engine.step(1 / 60)
@@ -421,7 +343,7 @@ def settle_serial(seed):
     return [body for body in engine.bodies if body.physics]
 
 
-def settle_parallel(seed):
+def settle_parallel(seed, num_substeps):
     """Settle the same scene with the per-patch solve fanned across workers.
 
     Description:
@@ -429,7 +351,8 @@ def settle_parallel(seed):
         default -- the equal-population vertical-slab cut.
     """
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+                           DetectionKind.LOOSE_QUADTREE, show_contacts=False,
+                           num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
     build_settle_scene(engine, seed)
     stepper = parallel.ParallelStepper(engine)
@@ -441,37 +364,11 @@ def settle_parallel(seed):
     return [body for body in engine.bodies if body.physics]
 
 
-@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
-@pytest.mark.parametrize("seed", SETTLE_SEEDS)
-def test_parallel_settles_like_serial(seed):
-    """Serial and parallel settle the same scene to the same physical invariants.
-
-    Description:
-        The parallel solve is a cown-ordered linearization, not the serial sweep,
-        so it is NOT bit-identical to the serial result. It is, however,
-        deterministic in its own right -- reproducible run to run and worker-count
-        independent (locked by test_worker_count). It must still agree with serial
-        on the physics: the same bodies survive, none tunnels the floor, the pile
-        reaches the same coarse height, and the system sheds the same kinetic
-        energy. This is the serial-vs-parallel invariant parity gate.
-    """
-    reference = settle_serial(seed)
-    fanned = settle_parallel(seed)
-
-    assert len(fanned) == len(reference)
-    assert all(body.position.y < 11 for body in fanned)
-    ref_speed = max(body.linear_velocity.magnitude() for body in reference)
-    par_speed = max(body.linear_velocity.magnitude() for body in fanned)
-    assert par_speed <= ref_speed + 1.0
-    ref_top = min(body.position.y for body in reference)
-    par_top = min(body.position.y for body in fanned)
-    assert par_top == pytest.approx(ref_top, abs=2.0)
-
-
-def settle_parallel_slabs(seed, num_slabs):
+def settle_parallel_slabs(seed, num_slabs, num_substeps):
     """Settle the scatter scene with the equal-population vertical-slab cut."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+                           DetectionKind.LOOSE_QUADTREE, show_contacts=False,
+                           num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
     build_settle_scene(engine, seed)
     stepper = parallel.ParallelStepper(engine, num_slabs=num_slabs)
@@ -481,36 +378,6 @@ def settle_parallel_slabs(seed, num_slabs):
             quiesce(30.0)
 
     return [body for body in engine.bodies if body.physics]
-
-
-@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
-@pytest.mark.parametrize("num_slabs", [1, 4, 16])
-@pytest.mark.parametrize("seed", SETTLE_SEEDS)
-def test_slab_stepper_settles_like_serial(seed, num_slabs):
-    """The slab-cut stepper settles the scene to the same physical invariants.
-
-    Description:
-        Selecting num_slabs swaps the loose-quadtree cut for equal-population
-        vertical slabs but reuses the identical intra, colour-ordered seam, and
-        writeback machinery, so it is another cown-ordered linearization (not
-        bit-identical to serial). It must still agree with serial on the
-        physics: the same bodies survive, none tunnels the floor, the pile
-        reaches the same coarse height, and the system sheds the same energy.
-        Swept over K=1 (one patch, no seams), a mid count, and K large enough to
-        force one-body slabs (every interior pair becomes a seam) so the dense-
-        seam and zero-seam schedules both run end-to-end through the solver.
-    """
-    reference = settle_serial(seed)
-    fanned = settle_parallel_slabs(seed, num_slabs=num_slabs)
-
-    assert len(fanned) == len(reference)
-    assert all(body.position.y < 11 for body in fanned)
-    ref_speed = max(body.linear_velocity.magnitude() for body in reference)
-    par_speed = max(body.linear_velocity.magnitude() for body in fanned)
-    assert par_speed <= ref_speed + 1.0
-    ref_top = min(body.position.y for body in reference)
-    par_top = min(body.position.y for body in fanned)
-    assert par_top == pytest.approx(ref_top, abs=2.0)
 
 
 @pytest.mark.parametrize("num_slabs", [0, -1])
@@ -533,36 +400,11 @@ def test_default_partition_is_slabs():
     assert parallel.DEFAULT_SLABS >= 1
 
 
-def test_begin_resolves_and_preserves_auto_request():
-    """begin() turns the AUTO_SLABS sentinel into a concrete worker-scaled int.
-
-    Description:
-        The default request stays the AUTO_SLABS string until begin(), which
-        resolves it against the worker count. The original request is kept on
-        _slab_request so a later begin() re-resolves from the sentinel rather
-        than locking in the first concrete count -- the reason _slab_request
-        exists at all.
-    """
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
-    stepper = parallel.ParallelStepper(engine)
-    assert stepper.num_slabs == parallel.AUTO_SLABS
-
-    stepper.begin()
-    expected = parallel.resolve_slab_count(parallel.AUTO_SLABS, None)
-    assert isinstance(stepper.num_slabs, int)
-    assert stepper.num_slabs == expected
-    assert stepper._slab_request == parallel.AUTO_SLABS
-
-    stepper.begin()
-    assert stepper.num_slabs == expected
-    assert stepper._slab_request == parallel.AUTO_SLABS
-
-
-def settle_parallel_quadtree(seed):
+def settle_parallel_quadtree(seed, num_substeps):
     """Settle the scatter scene with the loose-quadtree fallback (num_slabs=None)."""
     engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+                           DetectionKind.LOOSE_QUADTREE, show_contacts=False,
+                           num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
     build_settle_scene(engine, seed)
     stepper = parallel.ParallelStepper(engine, num_slabs=None)
@@ -572,31 +414,6 @@ def settle_parallel_quadtree(seed):
             quiesce(30.0)
 
     return [body for body in engine.bodies if body.physics]
-
-
-@pytest.mark.xfail(reason="cross-solver window: re-unified at S4")
-@pytest.mark.parametrize("seed", SETTLE_SEEDS)
-def test_quadtree_fallback_settles_like_serial(seed):
-    """The retained loose-quadtree fallback still settles to the serial invariants.
-
-    Description:
-        Slabs are the default, but num_slabs=None keeps the loose-quadtree
-        cut reachable; this guards that fallback against rot. Same
-        invariant-parity checks as the default and slab settle tests: bodies
-        survive, none tunnels the floor, the pile reaches the same coarse height,
-        and the system sheds the same kinetic energy.
-    """
-    reference = settle_serial(seed)
-    fanned = settle_parallel_quadtree(seed)
-
-    assert len(fanned) == len(reference)
-    assert all(body.position.y < 11 for body in fanned)
-    ref_speed = max(body.linear_velocity.magnitude() for body in reference)
-    par_speed = max(body.linear_velocity.magnitude() for body in fanned)
-    assert par_speed <= ref_speed + 1.0
-    ref_top = min(body.position.y for body in reference)
-    par_top = min(body.position.y for body in fanned)
-    assert par_top == pytest.approx(ref_top, abs=2.0)
 
 
 def build_two_patch_scene(seed):
@@ -641,20 +458,15 @@ def interior_pairs_with_floor(dynamics, floor):
 
 
 def serial_intra_step(physics, dynamics, pairs):
-    """Mirror solve_intra_substep serially: integrate then resolve interior pairs."""
-    solver.integrate_block(dynamics, GRAVITY, SUB_DT)
-    manifolds = solver.build_group_manifolds(pairs, None)
-    for manifold in manifolds:
-        solver.separate_manifold(manifold)
-    solver.resolve_pair_list(physics, manifolds, NUM_VEL, False)
+    """Mirror solve_intra_substep serially: one XPBD sub-step over the interior pairs."""
+    xpbd.solve_substep(physics, dynamics, pairs, GRAVITY, SUB_DT)
 
 
 def serial_seam_step(physics, pairs):
-    """Mirror solve_boundary_substep serially: resolve the seam, no integration."""
-    manifolds = solver.build_group_manifolds(pairs, None)
-    for manifold in manifolds:
-        solver.separate_manifold(manifold)
-    solver.resolve_pair_list(physics, manifolds, NUM_VEL, False)
+    """Mirror solve_boundary_substep serially: seam position then velocity pass, no integration."""
+    constraints = xpbd.build_contacts(pairs)
+    lambdas = xpbd.solve_positions(constraints)
+    xpbd.solve_velocities(physics, constraints, lambdas, SUB_DT, GRAVITY)
 
 
 def serial_two_patch_reference(dyn_a, dyn_b, floor, interior_a, interior_b, seam):
@@ -677,42 +489,6 @@ def serial_two_patch_reference(dyn_a, dyn_b, floor, interior_a, interior_b, seam
         serial_seam_step(physics, pairs_seam)
 
     return transport.pack_state(dyn_a), transport.pack_state(dyn_b)
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_multistep_two_patch_matches_serial(seed):
-    """A full multi-sub-step two-patch frame is bit-exact with the serial core.
-
-    Description:
-        This is the load-bearing FIFO-interleaving lock. The single-sub-step
-        tests above check one intra or one boundary in isolation; here all
-        NUM_SUBSTEPS sub-steps are scheduled up front exactly the way
-        ParallelStepper.step does (every patch's intra, then the seam, per
-        sub-step). Per-cown FIFO must thread them so the workers reproduce the
-        serial integrate -> interior -> seam sequence to the last bit, on every
-        patch cown, across all sub-steps. Because the schedule order alone
-        determines the result, this also pins worker-count independence: the
-        same fixed order yields the same block no matter how many workers run it.
-    """
-    dyn_a, dyn_b, floor, interior_a, interior_b, seam, geom = build_two_patch_scene(seed)
-    notice_seed(parallel.GEOMETRY_KEY, geom)
-    state_a = Cown(transport.pack_state(dyn_a))
-    state_b = Cown(transport.pack_state(dyn_b))
-    pairs_a = Cown(transport.pack_pairs(interior_a))
-    pairs_b = Cown(transport.pack_pairs(interior_b))
-    seam_cown = Cown(transport.pack_pairs(seam))
-
-    ref_a, ref_b = serial_two_patch_reference(dyn_a, dyn_b, floor,
-                                              interior_a, interior_b, seam)
-
-    for _ in range(NUM_SUBSTEPS):
-        parallel.schedule_intra(state_a, pairs_a)
-        parallel.schedule_intra(state_b, pairs_b)
-        parallel.schedule_boundary(state_a, state_b, seam_cown)
-    quiesce(30.0)
-
-    assert_blocks_equal(state_a.unwrap(), ref_a)
-    assert_blocks_equal(state_b.unwrap(), ref_b)
 
 
 def build_seam_drop_scene(drop_speed):
@@ -803,3 +579,240 @@ def test_seam_decomposition_matches_serial_below_threshold():
 
     mono, deco = seam_outcomes(physics, drop_speed=0.5)
     assert abs(mono - deco) < 2e-3, "below threshold the seam order barely matters"
+
+
+class TestWorkerParity:
+    """Bit-exact worker-vs-serial parity tests under one fresh runtime.
+
+    Description:
+        setup_class seeds the canonical solve config (the SUB_DT these tests
+        integrate at) once; no method re-seeds it, so the block stays canonical
+        for the whole suite. teardown_class tears the BOC system down with
+        wait() so the next suite starts from a clean runtime.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        """Start the runtime and seed the set-once canonical solve config."""
+        start(worker_count=4)
+        notice_seed(parallel.CONFIG_KEY,
+                    parallel.SolveConfig(Physics(PhysicsMode.FRICTION), GRAVITY,
+                                         SUB_DT, NUM_VEL, False))
+
+    @classmethod
+    def teardown_class(cls):
+        """Tear the BOC system down so the next suite gets a fresh runtime."""
+        wait()
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_intra_behaviour_matches_serial(self, seed):
+        """One intra sub-step through a worker is bit-exact with the serial core."""
+        dynamics, floor, interior_uid_pairs, geom = build_patch_scene(seed)
+        notice_seed(parallel.GEOMETRY_KEY, geom)
+        state_cown = Cown(transport.pack_state(dynamics))
+        pairs_cown = Cown(transport.pack_pairs(interior_uid_pairs))
+
+        reference = serial_intra_reference(dynamics, floor, interior_uid_pairs)
+        parallel.schedule_intra(state_cown, pairs_cown)
+        quiesce(30.0)
+
+        assert_blocks_equal(state_cown.unwrap(), reference)
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_boundary_behaviour_matches_serial(self, seed):
+        """One boundary sub-step through a worker is bit-exact with the serial core."""
+        dyn_a, dyn_b, boundary_uid_pairs, geom = build_boundary_scene(seed)
+        notice_seed(parallel.GEOMETRY_KEY, geom)
+        state_a = Cown(transport.pack_state(dyn_a))
+        state_b = Cown(transport.pack_state(dyn_b))
+        pairs_cown = Cown(transport.pack_pairs(boundary_uid_pairs))
+
+        ref_a, ref_b = serial_boundary_reference(dyn_a, dyn_b, boundary_uid_pairs)
+        parallel.schedule_boundary(state_a, state_b, pairs_cown)
+        quiesce(30.0)
+
+        assert_blocks_equal(state_a.unwrap(), ref_a)
+        assert_blocks_equal(state_b.unwrap(), ref_b)
+
+    def test_pinned_writeback_scatters_every_block_on_main(self):
+        """The pinned writeback scatters all patch blocks onto the real bodies once."""
+        rng = random.Random(0)
+        uids = allocate_uids(6)
+        bodies = [build_writeback_dynamic(rng, uid) for uid in uids]
+        engine = FakeEngine(bodies)
+        by_uid = {body.uid: body for body in bodies}
+
+        block_a = randomise_block(rng, bodies[:4])
+        block_b = randomise_block(rng, bodies[4:])
+        state_cowns = [Cown(block_a), Cown(block_b)]
+        engine_pinned = PinnedCown(engine)
+
+        parallel.schedule_writeback(state_cowns, engine_pinned)
+        quiesce(30.0)
+
+        for block_cown in state_cowns:
+            block = block_cown.unwrap()
+            for row, uid in enumerate(transport.uids_of(block)):
+                assert_body_matches_row(by_uid[uid], block, row)
+
+        assert engine.removed == [6], "remove_outside must run exactly once on main"
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_multistep_two_patch_matches_serial(self, seed):
+        """A full multi-sub-step two-patch frame is bit-exact with the serial core.
+
+        Description:
+            This is the load-bearing FIFO-interleaving lock. The single-sub-step
+            tests above check one intra or one boundary in isolation; here all
+            NUM_SUBSTEPS sub-steps are scheduled up front exactly the way
+            ParallelStepper.step does (every patch's intra, then the seam, per
+            sub-step). Per-cown FIFO must thread them so the workers reproduce the
+            serial integrate -> interior -> seam sequence to the last bit, on every
+            patch cown, across all sub-steps. Because the schedule order alone
+            determines the result, this also pins worker-count independence: the
+            same fixed order yields the same block no matter how many workers run it.
+        """
+        dyn_a, dyn_b, floor, interior_a, interior_b, seam, geom = build_two_patch_scene(seed)
+        notice_seed(parallel.GEOMETRY_KEY, geom)
+        state_a = Cown(transport.pack_state(dyn_a))
+        state_b = Cown(transport.pack_state(dyn_b))
+        pairs_a = Cown(transport.pack_pairs(interior_a))
+        pairs_b = Cown(transport.pack_pairs(interior_b))
+        seam_cown = Cown(transport.pack_pairs(seam))
+
+        ref_a, ref_b = serial_two_patch_reference(dyn_a, dyn_b, floor,
+                                                  interior_a, interior_b, seam)
+
+        for _ in range(NUM_SUBSTEPS):
+            parallel.schedule_intra(state_a, pairs_a)
+            parallel.schedule_intra(state_b, pairs_b)
+            parallel.schedule_boundary(state_a, state_b, seam_cown)
+        quiesce(30.0)
+
+        assert_blocks_equal(state_a.unwrap(), ref_a)
+        assert_blocks_equal(state_b.unwrap(), ref_b)
+
+
+class TestSettle:
+    """Serial-vs-parallel settle invariant-parity tests under one fresh runtime.
+
+    Description:
+        Each method drives a full ParallelStepper run, whose begin() re-seeds the
+        solve config with the engine's own sub_dt, so no canonical seed is needed
+        here. teardown_class tears the BOC system down with wait() so this suite
+        leaves a clean runtime behind.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        """Start the runtime; each test's stepper.begin() seeds its own config."""
+        start(worker_count=4)
+
+    @classmethod
+    def teardown_class(cls):
+        """Tear the BOC system down so the next suite gets a fresh runtime."""
+        wait()
+
+    @pytest.mark.parametrize("num_substeps", SETTLE_SUBSTEPS)
+    @pytest.mark.parametrize("seed", SETTLE_SEEDS)
+    def test_parallel_settles_like_serial(self, seed, num_substeps):
+        """Serial and parallel settle the same scene to the same physical invariants.
+
+        Description:
+            The parallel solve is a cown-ordered linearization, not the serial sweep,
+            so it is NOT bit-identical to the serial result. It is, however,
+            deterministic in its own right -- reproducible run to run and worker-count
+            independent (locked by test_worker_count). It must still agree with serial
+            on the physics: the same bodies survive, none tunnels the floor, the pile
+            reaches the same coarse height, and the system sheds the same kinetic
+            energy. This is the serial-vs-parallel invariant parity gate.
+        """
+        reference = settle_serial(seed, num_substeps)
+        fanned = settle_parallel(seed, num_substeps)
+
+        assert len(fanned) == len(reference)
+        assert all(body.position.y < 11 for body in fanned)
+        ref_speed = max(body.linear_velocity.magnitude() for body in reference)
+        par_speed = max(body.linear_velocity.magnitude() for body in fanned)
+        assert par_speed <= ref_speed + 1.0
+        ref_top = min(body.position.y for body in reference)
+        par_top = min(body.position.y for body in fanned)
+        assert par_top == pytest.approx(ref_top, abs=2.0)
+
+    @pytest.mark.parametrize("num_substeps", SETTLE_SUBSTEPS)
+    @pytest.mark.parametrize("num_slabs", [1, 4, 16])
+    @pytest.mark.parametrize("seed", SETTLE_SEEDS)
+    def test_slab_stepper_settles_like_serial(self, seed, num_slabs, num_substeps):
+        """The slab-cut stepper settles the scene to the same physical invariants.
+
+        Description:
+            Selecting num_slabs swaps the loose-quadtree cut for equal-population
+            vertical slabs but reuses the identical intra, colour-ordered seam, and
+            writeback machinery, so it is another cown-ordered linearization (not
+            bit-identical to serial). It must still agree with serial on the
+            physics: the same bodies survive, none tunnels the floor, the pile
+            reaches the same coarse height, and the system sheds the same energy.
+            Swept over K=1 (one patch, no seams), a mid count, and K large enough to
+            force one-body slabs (every interior pair becomes a seam) so the dense-
+            seam and zero-seam schedules both run end-to-end through the solver.
+        """
+        reference = settle_serial(seed, num_substeps)
+        fanned = settle_parallel_slabs(seed, num_slabs=num_slabs, num_substeps=num_substeps)
+
+        assert len(fanned) == len(reference)
+        assert all(body.position.y < 11 for body in fanned)
+        ref_speed = max(body.linear_velocity.magnitude() for body in reference)
+        par_speed = max(body.linear_velocity.magnitude() for body in fanned)
+        assert par_speed <= ref_speed + 1.0
+        ref_top = min(body.position.y for body in reference)
+        par_top = min(body.position.y for body in fanned)
+        assert par_top == pytest.approx(ref_top, abs=2.0)
+
+    def test_begin_resolves_and_preserves_auto_request(self):
+        """begin() turns the AUTO_SLABS sentinel into a concrete worker-scaled int.
+
+        Description:
+            The default request stays the AUTO_SLABS string until begin(), which
+            resolves it against the worker count. The original request is kept on
+            _slab_request so a later begin() re-resolves from the sentinel rather
+            than locking in the first concrete count -- the reason _slab_request
+            exists at all.
+        """
+        engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+                               DetectionKind.LOOSE_QUADTREE, show_contacts=False)
+        stepper = parallel.ParallelStepper(engine)
+        assert stepper.num_slabs == parallel.AUTO_SLABS
+
+        stepper.begin()
+        expected = parallel.resolve_slab_count(parallel.AUTO_SLABS, None)
+        assert isinstance(stepper.num_slabs, int)
+        assert stepper.num_slabs == expected
+        assert stepper._slab_request == parallel.AUTO_SLABS
+
+        stepper.begin()
+        assert stepper.num_slabs == expected
+        assert stepper._slab_request == parallel.AUTO_SLABS
+
+    @pytest.mark.parametrize("num_substeps", SETTLE_SUBSTEPS)
+    @pytest.mark.parametrize("seed", SETTLE_SEEDS)
+    def test_quadtree_fallback_settles_like_serial(self, seed, num_substeps):
+        """The retained loose-quadtree fallback still settles to the serial invariants.
+
+        Description:
+            Slabs are the default, but num_slabs=None keeps the loose-quadtree
+            cut reachable; this guards that fallback against rot. Same
+            invariant-parity checks as the default and slab settle tests: bodies
+            survive, none tunnels the floor, the pile reaches the same coarse height,
+            and the system sheds the same kinetic energy.
+        """
+        reference = settle_serial(seed, num_substeps)
+        fanned = settle_parallel_quadtree(seed, num_substeps)
+
+        assert len(fanned) == len(reference)
+        assert all(body.position.y < 11 for body in fanned)
+        ref_speed = max(body.linear_velocity.magnitude() for body in reference)
+        par_speed = max(body.linear_velocity.magnitude() for body in fanned)
+        assert par_speed <= ref_speed + 1.0
+        ref_top = min(body.position.y for body in reference)
+        par_top = min(body.position.y for body in fanned)
+        assert par_top == pytest.approx(ref_top, abs=2.0)

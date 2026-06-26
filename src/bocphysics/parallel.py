@@ -16,7 +16,7 @@ from typing import List, NamedTuple, Tuple, Union
 from bocpy import (Cown, Matrix, notice_read, notice_seed, PinnedCown, start,
                    when, WORKER_COUNT)
 
-from . import geometry, solver, transport
+from . import geometry, solver, transport, xpbd
 from .patches import build_partition, build_slab_partition
 from .physics import Physics
 
@@ -97,10 +97,11 @@ def solve_intra_substep(state, pairs_block):
         owns. The interior pairs ride in their own cown as an (M x 2) uid block
         (or None when the patch has no interior pairs), reused across every
         sub-step. Reapplies the latest state first so any boundary edits made
-        between sub-steps are picked up, integrates the dynamics, builds the
-        interior manifolds, applies positional correction, then iterates the
-        velocity solver over the interior and dynamic-static pairs at the post-
-        integration pose, then writes the new state back for the next behavior.
+        between sub-steps are picked up, then runs one XPBD sub-step over the
+        interior and dynamic-static pairs (integrate, solve positions, derive
+        velocities, solve velocities). The XPBD x_prev snapshot lives inside
+        solve_substep, so it is local to this behavior -- no state-block column
+        crosses the seam. The new state is written back for the next behavior.
     """
     geom = notice_read(GEOMETRY_KEY, {})
     shell_cache.evict_retired(geom, notice_read(GEOMETRY_VERSION_KEY, 0))
@@ -112,9 +113,8 @@ def solve_intra_substep(state, pairs_block):
     transport.apply_state(dyn_shells, block)
 
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_uid_pairs]
-    solver.integrate_block(dyn_shells, config.gravity, config.sub_dt)
-    solver.resolve_manifolds(config.physics, pairs, config.num_velocity_iterations,
-                             batched=config.batched)
+    xpbd.solve_substep(config.physics, dyn_shells, pairs, config.gravity,
+                       config.sub_dt)
 
     transport.store_state(dyn_shells, block)
 
@@ -132,23 +132,20 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
     Description:
         Boundary pairs are dynamic-dynamic by construction, so no statics are
         replicated here. Both patches' latest state is reapplied to their shells,
-        the owned seam pairs are built, positionally corrected, and resolved at
+        the owned seam pairs are built, position-solved, then velocity-solved at
         the current pose, and both blocks are written back. There is no
         integration -- that already happened in the intra sub-step that ran first
         on each cown's FIFO. The pair block carries (uid_a, uid_b) in endpoint
         order so the contact normal is never flipped.
 
-        Known divergence: the seam manifold is built here, after
-        each patch has already velocity-solved its interior, so the restitution
-        target sampled in restitution_bias sees an already-damped closing speed.
-        The serial path builds every manifold up front at the post-integration,
-        pre-resolve state. The two paths therefore agree at or below the
-        restitution threshold (resting contacts, the stacking regime) but the
-        decomposed seam suppresses restitution above it. The gap is quantified
-        and locked by test_parallel.test_seam_decomposition_* across the
-        threshold. Closing the gap is entangled with the seam pose (positional
-        correction also runs before this build) and is deferred to the solver
-        architecture work, not patched in isolation.
+        Known divergence: the seam runs the XPBD position then velocity pass but
+        skips derive_velocities on its own positional push -- that velocity
+        increment stays sampled from each patch's intra-local x_prev, which the
+        seam cannot see. So the seam under-couples position -> velocity relative
+        to a single global XPBD pass: it damps rather than injects energy at the
+        seam (conservative). Friction and restitution are otherwise full. The
+        residual is bounded by the S5.2 invariants and locked as a tolerance
+        band by test_parallel.test_seam_decomposition_* (recaptured in S5).
     """
     geom = notice_read(GEOMETRY_KEY, {})
     shell_cache.evict_retired(geom, notice_read(GEOMETRY_VERSION_KEY, 0))
@@ -165,8 +162,10 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
     by_uid = {shell.uid: shell for shell in shells_a}
     by_uid.update({shell.uid: shell for shell in shells_b})
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in boundary_uid_pairs]
-    solver.resolve_manifolds(config.physics, pairs, config.num_velocity_iterations,
-                             batched=config.batched)
+    constraints = xpbd.build_contacts(pairs)
+    lambdas = xpbd.solve_positions(constraints)
+    xpbd.solve_velocities(config.physics, constraints, lambdas, config.sub_dt,
+                          config.gravity)
 
     transport.store_state(shells_a, block_a)
     transport.store_state(shells_b, block_b)
