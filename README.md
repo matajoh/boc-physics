@@ -9,10 +9,10 @@ correctness as a first-class concern.
 ## What it does
 
 - Convex-polygon and circle rigid bodies with mass, inertia, and friction.
-- A posteriori collision handling: integrate, detect, then resolve with
-  impulses. The default solver separates a few sub-steps (which integrate and
-  re-detect, limiting tunnelling) from several velocity iterations per sub-step
-  (which converge the cached contacts, giving stable stacks).
+- Position-based (XPBD) collision handling: each frame runs several sub-steps,
+  and each sub-step integrates, re-detects (limiting tunnelling), projects the
+  bodies out of penetration, then applies restitution and friction. Stable
+  stacks come from the sub-step count (default 8).
 - Broad-phase detection via a quadtree spatial index (or a brute-force scan).
 - An opt-in BOC worker solver (`--parallel`) that cuts the world into
   equal-population vertical slabs and fans each slab's solve across workers.
@@ -83,7 +83,6 @@ count, e.g. `simulation --scene pyramid --levels 6`.
 |------|------------------|---------|
 | `--scene` | name or JSON path (`default`) | Choose the arena. |
 | `--levels` | int (auto) | Row count for `stack` / `pyramid`. |
-| `--mode`, `-m` | `basic`, `friction`, `none`, `rotation` (`friction`) | Physics response model. |
 | `--detect` | `quadtree`, `basic` (`quadtree`) | Broad-phase algorithm. |
 | `--parallel` | flag | Solve each frame across BOC worker sub-interpreters. |
 | `--workers` | int (auto) | Worker count when `--parallel` is set. |
@@ -98,20 +97,22 @@ workers.
 ## The per-frame step
 
 Each frame builds the broad phase once, then solves all dynamic bodies and
-their candidate pairs together as a single group. The default solver splits the
-work into a few **sub-steps** and several **velocity iterations**. A sub-step
-integrates the dynamic bodies and builds every pair's contact manifold once
-(the narrow phase); the velocity iterations then reuse those cached manifolds
-to converge the coupled contacts without paying the narrow-phase cost again.
-Out-of-bounds bodies are pruned at the end of the frame.
+their candidate pairs together as a single group with a position-based (XPBD)
+solver. The work is split into several **sub-steps** (default 8); convergence
+comes from the sub-step count rather than an inner iteration loop. Each sub-step
+integrates the dynamic bodies, builds every pair's contact constraint (the
+narrow phase), projects the bodies out of penetration (the position solve),
+derives velocities from the position change, then applies restitution and
+friction (the velocity solve). Out-of-bounds bodies are pruned at the end of the
+frame.
 
 ```mermaid
 flowchart LR
     A[broad phase: quadtree pairs] --> C[sub-step: integrate bodies]
-    C --> D[narrow phase: build contact manifolds]
-    D --> E[velocity iterations: resolve cached contacts]
-    E -->|next velocity iteration| E
-    E -->|next sub-step| C
+    C --> D[narrow phase: build contact constraints]
+    D --> E[position solve: project out of penetration]
+    E --> G[velocity solve: restitution and friction]
+    G -->|next sub-step| C
     C -->|frame done| F[remove out-of-bounds]
 ```
 
@@ -148,55 +149,80 @@ to benchmark the loose-quadtree fallback or `--slabs N` to set the slab count.
 Add `--batched` (serial or parallel) to swap the per-contact Python loop for the
 colour-batched velocity kernel.
 
-### Baseline (80 shapes, 300 frames, friction, quadtree)
+### Serial scalar (80 shapes, 300 frames, quadtree)
 
 Averaged over five runs, reported as mean ± one standard deviation.
 
 | Frame | ms/frame | Kinetic energy | Penetration |
 |------:|---------:|---------------:|------------:|
-|    30 |   0.18 ± 0.09 |     306.81 ± 26.06 |  2.0000 ± 0.0000 |
-|    60 |   0.63 ± 0.10 |    2175.21 ± 89.01 |  2.0000 ± 0.0000 |
-|    90 |   1.21 ± 0.31 |    7272.18 ± 179.91 |  2.1597 ± 0.2186 |
-|   120 |   1.45 ± 0.20 |   15100.79 ± 1293.80 |  2.0000 ± 0.0000 |
-|   150 |   2.01 ± 0.19 |   13636.04 ± 1002.83 |  2.0134 ± 0.0290 |
-|   180 |   3.94 ± 0.13 |   10370.42 ± 851.43 |  2.0342 ± 0.0504 |
-|   210 |   8.17 ± 1.01 |    7650.30 ± 1695.14 |  2.0807 ± 0.0385 |
-|   240 |  14.39 ± 1.31 |    6596.73 ± 1681.94 |  2.2137 ± 0.0820 |
-|   270 |  20.61 ± 2.73 |    2294.60 ± 572.75 |  2.5240 ± 0.0703 |
-|   300 |  25.93 ± 2.17 |     249.32 ± 73.20 |  2.4086 ± 0.0704 |
+|    30 |   0.18 ± 0.05 |    129.73 ± 7.82 |  2.0000 ± 0.0000 |
+|    60 |   0.43 ± 0.10 |    938.91 ± 35.91 |  2.0000 ± 0.0000 |
+|    90 |   0.75 ± 0.14 |   3065.92 ± 140.69 |  2.0000 ± 0.0000 |
+|   120 |   1.07 ± 0.15 |   6300.02 ± 766.00 |  2.0000 ± 0.0000 |
+|   150 |   1.50 ± 0.13 |   6489.65 ± 293.70 |  2.0000 ± 0.0000 |
+|   180 |   2.37 ± 0.09 |   5861.46 ± 779.70 |  2.0004 ± 0.0005 |
+|   210 |   4.05 ± 0.35 |   5473.43 ± 402.60 |  2.0160 ± 0.0186 |
+|   240 |   6.38 ± 0.41 |   5170.93 ± 884.35 |  2.0183 ± 0.0115 |
+|   270 |   8.79 ± 0.41 |   4124.11 ± 398.76 |  2.0575 ± 0.0523 |
+|   300 |  11.82 ± 0.73 |   1729.56 ± 104.55 |  2.0332 ± 0.0142 |
 
-Mean 7.9 ± 0.5 ms/frame over the five runs, with the substep solver that
-separates sub-steps from velocity iterations. Cost climbs steadily as bodies
-accumulate and islands merge; kinetic energy peaks mid-run while shapes are
-still falling, then collapses as the pile settles. Penetration stays bounded
-near 2 throughout — the behaviour we want from the contact solver.
+Mean 3.73 ± 0.07 ms/frame over the five runs, with the XPBD solver running 8
+sub-steps per frame. Cost climbs as bodies accumulate and islands merge; kinetic
+energy peaks mid-run while shapes are still falling, then collapses as the pile
+settles. Penetration holds near 2 throughout — the convergence the 8 sub-steps
+buy us.
 
-### Parallel (slab cut, 8 workers)
+### Serial batched (80 shapes, 300 frames, quadtree)
+
+The same scene with `--batched`, which swaps the per-contact Python loop for the
+colour-batched velocity kernel. Same XPBD physics, same seeded sweep.
+
+| Frame | ms/frame | Kinetic energy | Penetration |
+|------:|---------:|---------------:|------------:|
+|    30 |   0.16 ± 0.03 |    129.73 ± 7.82 |  2.0000 ± 0.0000 |
+|    60 |   0.44 ± 0.13 |    938.91 ± 35.91 |  2.0000 ± 0.0000 |
+|    90 |   0.78 ± 0.18 |   3065.92 ± 140.69 |  2.0000 ± 0.0000 |
+|   120 |   1.04 ± 0.08 |   6300.02 ± 766.00 |  2.0000 ± 0.0000 |
+|   150 |   1.51 ± 0.11 |   6489.65 ± 293.70 |  2.0000 ± 0.0000 |
+|   180 |   2.53 ± 0.15 |   5862.40 ± 778.36 |  2.0004 ± 0.0005 |
+|   210 |   4.29 ± 0.34 |   5478.71 ± 381.76 |  2.0320 ± 0.0291 |
+|   240 |   6.85 ± 0.19 |   4976.59 ± 744.52 |  2.0442 ± 0.0315 |
+|   270 |   9.28 ± 0.54 |   4064.36 ± 295.75 |  2.0241 ± 0.0180 |
+|   300 |  12.82 ± 0.83 |   1701.11 ± 168.97 |  2.0519 ± 0.0303 |
+
+Mean 3.97 ± 0.08 ms/frame — within noise of the scalar serial sweep, marginally
+slower here. At this body count the colour-batching overhead roughly cancels the
+saving from dropping the per-contact loop, so it neither helps nor hurts; the
+kernel earns its keep at higher contact counts. Penetration and kinetic energy
+track the scalar run, as the same XPBD physics demands.
+
+### BOC parallel (slab cut, 8 workers)
 
 The same scene under `--parallel --workers 8`, which cuts the world into
 equal-population vertical slabs and fans each slab's solve across BOC workers.
 Averaged over five runs, mean ± one standard deviation (the same seeded sweep as
-the baseline).
+the serial runs).
 
 | Frame | ms/frame | Kinetic energy | Penetration |
 |------:|---------:|---------------:|------------:|
-|    30 |   0.73 ± 0.16 |     306.36 ± 26.87 |  2.0000 ± 0.0000 |
-|    60 |   1.66 ± 0.09 |    2173.06 ± 91.38 |  2.0000 ± 0.0000 |
-|    90 |   2.24 ± 0.18 |    7281.24 ± 177.86 |  2.0971 ± 0.1330 |
-|   120 |   2.44 ± 0.33 |   15108.60 ± 1295.76 |  2.0000 ± 0.0000 |
-|   150 |   2.87 ± 0.48 |   13546.62 ± 931.44 |  2.0054 ± 0.0090 |
-|   180 |   4.09 ± 0.68 |   10219.06 ± 934.89 |  2.0552 ± 0.0401 |
-|   210 |   5.84 ± 0.43 |    7887.23 ± 1493.26 |  2.2409 ± 0.1081 |
-|   240 |   6.80 ± 1.01 |    6190.65 ± 1865.09 |  2.5321 ± 0.0573 |
-|   270 |   8.43 ± 0.45 |    2629.97 ± 714.19 |  3.1137 ± 0.1779 |
-|   300 |   9.51 ± 0.73 |     394.28 ± 115.58 |  3.4338 ± 0.7303 |
+|    30 |   0.73 ± 0.02 |    129.73 ± 7.82 |  2.0000 ± 0.0000 |
+|    60 |   1.51 ± 0.39 |    939.05 ± 35.97 |  2.0000 ± 0.0000 |
+|    90 |   2.09 ± 0.30 |   3066.06 ± 140.84 |  2.0000 ± 0.0000 |
+|   120 |   2.38 ± 0.15 |   6300.16 ± 766.25 |  2.0000 ± 0.0000 |
+|   150 |   2.79 ± 0.20 |   6516.72 ± 355.71 |  2.0000 ± 0.0000 |
+|   180 |   3.29 ± 0.22 |   5776.46 ± 824.25 |  2.0000 ± 0.0000 |
+|   210 |   4.20 ± 0.20 |   5534.97 ± 451.44 |  2.0064 ± 0.0055 |
+|   240 |   4.37 ± 0.24 |   5168.41 ± 1026.30 |  2.0571 ± 0.0321 |
+|   270 |   5.02 ± 0.20 |   3999.37 ± 519.99 |  2.0234 ± 0.0186 |
+|   300 |   6.20 ± 0.27 |   1698.16 ± 240.99 |  2.0343 ± 0.0298 |
 
-Mean 4.5 ± 0.3 ms/frame over the five runs — roughly 1.8x the serial baseline
-overall, and ~2.7x at the dense final frame (25.9 → 9.5 ms) where there is the
-most independent work to fan out. The slab decomposition settles slightly
-looser than the serial sweep: penetration drifts toward ~3 late in the run
-rather than holding near 2, the expected order-of-resolution trade-off for
-splitting one island's contacts across workers.
+Mean 3.26 ± 0.13 ms/frame over the five runs — slightly faster than the serial
+sweep overall, and ~1.9x at the dense final frame (11.8 → 6.2 ms) where there is
+the most independent work to fan out. Early frames carry fixed worker-dispatch
+overhead that dominates while there is little to solve, so the speed-up is
+concentrated in the dense late frames. Penetration holds near 2 throughout,
+matching the serial sweep — the 8 sub-steps keep the slab decomposition as tight
+as the serial order.
 
 ### Snapshots
 
@@ -216,9 +242,9 @@ for **Behavior-Oriented Concurrency**: data lives inside *cowns* and code runs
 as *behaviors* that the scheduler dispatches once the cowns they need are
 available, eliminating data races and deadlocks by construction.
 
-A full tutorial — rigid-body physics, the engine's Gauss-Seidel solver, and the
-step-by-step conversion to a parallel BOC solver — along with a Sphinx API
-reference is in development under `docs/`.
+A full tutorial — rigid-body physics, the engine's position-based (XPBD) solver,
+and the step-by-step conversion to a parallel BOC solver — along with a Sphinx
+API reference is in development under `docs/`.
 
 ## Development
 
