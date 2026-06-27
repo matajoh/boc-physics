@@ -9,54 +9,12 @@ from bocphysics import solver, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import DetectionKind, PhysicsMode
 from bocphysics.engine import PhysicsEngine
-from bocphysics.physics import Constraint
-
-UP = Matrix.vector([0, 1])
 
 
 def make_engine() -> PhysicsEngine:
     """Create a windowless engine with friction physics and quadtree detection."""
     return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
                          DetectionKind.QUADTREE, show_contacts=False)
-
-
-def test_build_manifold_drops_false_positive():
-    """Two far-apart bodies yield no manifold."""
-    a = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(Matrix.vector([0, 0]))
-    b = Circle.create(1.0, 2.0, (50, 100, 200)).move_to(Matrix.vector([50, 0]))
-    a.physics = b.physics = True
-    assert solver.build_manifold(a, b, None) is None
-
-
-def test_build_manifold_records_contacts_when_set_given():
-    """A real contact records its points into the supplied set."""
-    a = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(Matrix.vector([0, 0]))
-    b = Circle.create(1.0, 2.0, (50, 100, 200)).move_to(Matrix.vector([1.5, 0]))
-    a.physics = b.physics = True
-    contacts = set()
-    manifold = solver.build_manifold(a, b, contacts)
-    assert manifold is not None
-    assert len(contacts) >= 1
-
-
-def test_build_group_manifolds_drops_static_static_pair():
-    """Two overlapping statics yield no manifold, so the solve never divides by zero."""
-    a = Polygon.create_rectangle(2.0, 2.0, 1.0, (90, 90, 90), is_static=True)
-    b = Polygon.create_rectangle(2.0, 2.0, 1.0, (90, 90, 90), is_static=True)
-    a.move_to(Matrix.vector([0, 0]))
-    b.move_to(Matrix.vector([1.0, 0]))
-    a.physics = b.physics = False
-    assert solver.build_group_manifolds([(a, b)], None) == []
-
-
-def test_build_group_manifolds_keeps_dynamic_static_pair():
-    """A dynamic-static overlap still builds: the guard drops only static-static."""
-    dynamic = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(Matrix.vector([0, 0]))
-    static = Polygon.create_rectangle(2.0, 2.0, 1.0, (90, 90, 90), is_static=True)
-    static.move_to(Matrix.vector([1.0, 0]))
-    dynamic.physics = True
-    static.physics = False
-    assert len(solver.build_group_manifolds([(dynamic, static)], None)) == 1
 
 
 def test_solver_core_matches_engine_substep():
@@ -198,36 +156,6 @@ def test_integrate_block_is_bit_exact_with_per_body_step(seed):
 def test_integrate_block_handles_empty_region():
     """An empty body list integrates to a no-op without error."""
     solver.integrate_block([], Matrix.vector([0, 9.81]), 1 / 60)
-
-
-def make_height_constraint(ya, yb):
-    """Build a contactless constraint whose two bodies sit at the given heights."""
-    a = Polygon.create_rectangle(2, 2, 1.0, (1, 1, 1)).move_to(Matrix.vector([0, ya]))
-    b = Polygon.create_rectangle(2, 2, 1.0, (1, 1, 1)).move_to(Matrix.vector([0, yb]))
-    a.physics = b.physics = True
-    return Constraint(PhysicsMode.FRICTION, a, b, UP, ())
-
-
-def test_constraint_height_is_mean_y():
-    """The ordering key is the mean y of the two bodies."""
-    constraint = make_height_constraint(4.0, 10.0)
-    assert solver.constraint_height(constraint) == 7.0
-
-
-def test_constraint_height_sort_is_apex_first_and_stable():
-    """Ascending sort visits the apex (smallest y) first; ties keep input order."""
-    low = make_height_constraint(10.0, 10.0)
-    apex = make_height_constraint(2.0, 2.0)
-    mid_first = make_height_constraint(5.0, 5.0)
-    mid_second = make_height_constraint(5.0, 5.0)
-    constraints = [low, mid_first, apex, mid_second]
-
-    constraints.sort(key=solver.constraint_height)
-
-    assert constraints[0] is apex
-    assert constraints[1] is mid_first
-    assert constraints[2] is mid_second
-    assert constraints[3] is low
 
 
 def test_broad_phase_pair_order_is_deterministic():

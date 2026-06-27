@@ -5,7 +5,7 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics import geometry, solver, transport
+from bocphysics import geometry, transport, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import PhysicsMode
 from bocphysics.physics import Physics
@@ -152,9 +152,9 @@ def test_rehydrated_solve_matches_serial(seed):
     by_uid = {s.uid: s for s in dyn_shells + stat_shells}
     shell_pairs = [(by_uid[a.uid], by_uid[b.uid]) for a, b in pairs]
 
-    solver.solve_group_substep(physics, dynamics, pairs, gravity, sub_dt, 4, 5, None)
-    solver.solve_group_substep(physics, dyn_shells, shell_pairs,
-                               gravity, sub_dt, 4, 5, None)
+    xpbd.solve_group_substep(physics, dynamics, pairs, gravity, sub_dt, 4, None)
+    xpbd.solve_group_substep(physics, dyn_shells, shell_pairs,
+                             gravity, sub_dt, 4, None)
 
     for original, shell in zip(dynamics, dyn_shells):
         assert_same_state(original, shell)
