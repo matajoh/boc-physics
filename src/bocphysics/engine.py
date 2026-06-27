@@ -34,7 +34,7 @@ class PhysicsEngine:
     def __init__(self, width: float, height: float,
                  detection_kind: DetectionKind,
                  show_contacts: bool, height_in_meters=30,
-                 num_substeps=4):
+                 num_substeps=8):
         """Create the engine from the window size and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
