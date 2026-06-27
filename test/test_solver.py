@@ -7,13 +7,13 @@ import pytest
 
 from bocphysics import solver, xpbd
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 
 
 def make_engine() -> PhysicsEngine:
     """Create a windowless engine with friction physics and quadtree detection."""
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    return PhysicsEngine(1200, 900,
                          DetectionKind.QUADTREE, show_contacts=False)
 
 

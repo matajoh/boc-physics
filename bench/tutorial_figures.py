@@ -26,7 +26,6 @@ from bocpy import Matrix
 from bocphysics import load_scene
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.config import Resolution
-from bocphysics.engine import PhysicsMode
 from bocphysics.simulation import Simulation
 
 
@@ -97,7 +96,6 @@ def render_figure(figure: FigureSpec, out_dir):
     """Step one scene to a settled frame and save a single PNG of it."""
     Matrix.seed(figure.seed)
     sim = Simulation(resolution=figure.resolution,
-                     physics_mode=PhysicsMode.FRICTION,
                      scene=load_scene(figure.scene, figure.levels),
                      overlay=figure.overlay, visible=False)
     schedule = (make_spawn_schedule(figure.shapes, figure.frames, figure.frames // 2)

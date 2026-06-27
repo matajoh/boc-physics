@@ -12,7 +12,7 @@ from pyglet.window import key, mouse
 
 from .bodies import Circle, Polygon
 from .config import DetectionKind, Resolution
-from .engine import PhysicsEngine, PhysicsMode
+from .engine import PhysicsEngine
 from .parallel import AUTO_SLABS, MIN_SLAB_BODIES, ParallelStepper, resolve_slab_count
 from .patches import build_slab_partition, slab_boundaries
 from .quadtree import QuadTree
@@ -33,7 +33,6 @@ class Simulation(pyglet.window.Window):
     """The interactive pyglet window driving the physics simulation."""
 
     def __init__(self, resolution: Resolution,
-                 physics_mode=PhysicsMode.FRICTION,
                  detection_kind=DetectionKind.QUADTREE,
                  debug=False, show_contacts=False, snapshot=False,
                  scene: Scene = DEFAULT_SCENE,
@@ -58,7 +57,7 @@ class Simulation(pyglet.window.Window):
         self.physics_stats = "Physics: ms"
 
         view_height = scene.view_height or 30
-        self.engine = PhysicsEngine(resolution.width, resolution.height, physics_mode,
+        self.engine = PhysicsEngine(resolution.width, resolution.height,
                                     detection_kind, show_contacts,
                                     height_in_meters=view_height)
         self.camera = Camera(self.engine.center, self.engine.scale, resolution.height)

@@ -19,7 +19,7 @@ import pytest
 
 from bocphysics import parallel
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 
 SETTLE_FRAMES = 120
@@ -65,7 +65,7 @@ def settle_snapshot(seed, worker_count, num_slabs=None):
         num_slabs selects the partition strategy so both cuts -- the loose
         quadtree (None) and the equal-population slabs -- are held to the lock.
     """
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
     engine.next_uid = UID_BASE
     build_settle_scene(engine, seed)

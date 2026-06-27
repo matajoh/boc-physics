@@ -86,18 +86,6 @@ def scan_polygon_edges(edges: Matrix, points: Matrix, tol: float, state: list,
         scan_edge_points(points, row, tol, state, source_uid)
 
 
-def separate(a: RigidBody, b: RigidBody, collision: Collision):
-    """Push the bodies apart along the collision normal to remove the overlap."""
-    correction = collision.depth
-    if not a.physics:
-        b.move(collision.normal * correction)
-    elif not b.physics:
-        a.move(-collision.normal * correction)
-    else:
-        a.move(-collision.normal * correction * 0.5)
-        b.move(collision.normal * correction * 0.5)
-
-
 def find_contact_points(a: RigidBody,
                         b: RigidBody,
                         collision: Collision) -> Tuple:

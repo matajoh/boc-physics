@@ -7,13 +7,13 @@ import pytest
 
 from bocphysics import solver, xpbd, xpbd_kernel
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 from bocphysics.physics import Physics
 
 GRAVITY = Matrix.vector([0, 9.81])
 SUB_DT = (1 / 60) / 8
-FRICTION = Physics(PhysicsMode.FRICTION)
+FRICTION = Physics()
 
 
 def make_circle(uid, x, y, vx=0.0, vy=0.0, spin=0.0, radius=1.0):
@@ -100,7 +100,7 @@ def test_colours_are_body_disjoint():
 
 def make_engine():
     """Create a windowless engine with friction physics and quadtree detection."""
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION, DetectionKind.QUADTREE,
+    return PhysicsEngine(1200, 900, DetectionKind.QUADTREE,
                          show_contacts=False, num_substeps=8)
 
 

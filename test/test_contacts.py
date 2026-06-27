@@ -12,7 +12,7 @@ from bocpy import Matrix
 
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.contacts import (find_contact_points,
                                  find_contact_points_polygon_polygon,
                                  scan_edge_points)
@@ -23,7 +23,7 @@ FRAME = 1 / 60
 
 def make_engine() -> PhysicsEngine:
     """Create a windowless substep engine with friction physics."""
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    return PhysicsEngine(1200, 900,
                          DetectionKind.QUADTREE, show_contacts=False)
 
 
@@ -102,7 +102,7 @@ def test_circle_contact_carries_its_own_feature_id():
 
 def stack_engine() -> PhysicsEngine:
     """Build a three-box vertical stack resting on a static floor."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.QUADTREE, show_contacts=False,
                            num_substeps=8)
     floor = Polygon.create_rectangle(30, 2, 2.0, (0, 100, 0), is_static=True)

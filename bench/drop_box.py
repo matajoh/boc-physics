@@ -22,7 +22,7 @@ from bocpy import Matrix, quiesce, wait
 from bocphysics import solver
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.parallel import ParallelStepper
 from bocphysics.scene import OPEN_BOX
 
@@ -142,7 +142,7 @@ def save_snapshot(window, engine, camera, path: str):
     return static_kept, kept
 
 
-def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
+def record_video(shapes: int, frames: int, dt: float, detect: str,
                  spawn_frames: int, path: str, fps: int, seed: int):
     """Run one simulation, rendering every frame and encoding it to a video file."""
     import pyglet
@@ -151,8 +151,7 @@ def record_video(shapes: int, frames: int, dt: float, mode: str, detect: str,
     from bocphysics.render import draw_frame, draw_static_layer, open_encoder
 
     Matrix.seed(seed)
-    engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
-                           DetectionKind[detect.upper()], show_contacts=False)
+    engine = PhysicsEngine(1200, 900, DetectionKind[detect.upper()], show_contacts=False)
     for body in OPEN_BOX.build():
         engine.add_body(body)
 
@@ -202,7 +201,7 @@ def make_stepper(engine, num_slabs):
     return ParallelStepper(engine, num_slabs=num_slabs)
 
 
-def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
+def simulate(shapes: int, frames: int, dt: float, detect: str, report: int,
              spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
              parallel=False, workers=None, uid_base=0, num_slabs=DEFAULT_PARTITION,
              num_substeps=None):
@@ -211,9 +210,8 @@ def simulate(shapes: int, frames: int, dt: float, mode: str, detect: str, report
 
     Matrix.seed(seed)
     substep_kwargs = {} if num_substeps is None else {"num_substeps": num_substeps}
-    engine = PhysicsEngine(1200, 900, PhysicsMode[mode.upper()],
-                           DetectionKind[detect.upper()], show_contacts=False,
-                           **substep_kwargs)
+    engine = PhysicsEngine(1200, 900, DetectionKind[detect.upper()],
+                           show_contacts=False, **substep_kwargs)
     engine.next_uid = uid_base
     for body in OPEN_BOX.build():
         engine.add_body(body)
@@ -275,7 +273,7 @@ def mean_std(values):
     return mean, std
 
 
-def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int,
+def run(shapes: int, frames: int, dt: float, detect: str, report: int,
         runs: int, spawn_frames: int, seed: int, snapshot_frames=(), snapshot_dir="docs/images",
         parallel=False, workers=None, num_slabs=DEFAULT_PARTITION, num_substeps=None):
     """Run the benchmark over several runs and print mean +/- std statistics."""
@@ -287,7 +285,7 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
     label = f"{label} {'batched' if solver.use_batched_solver else 'scalar'}"
     if num_substeps is not None:
         label = f"{label} substeps={num_substeps}"
-    print(f"shapes={shapes} frames={frames} dt={dt} mode={mode} detect={detect} "
+    print(f"shapes={shapes} frames={frames} dt={dt} detect={detect} "
           f"runs={runs} spawn_frames={spawn_frames} seed={seed} [{label}]")
 
     all_rows = []
@@ -295,7 +293,7 @@ def run(shapes: int, frames: int, dt: float, mode: str, detect: str, report: int
     body_count = 0
     for run_index in range(runs):
         frames_to_snap = snapshot_frames if run_index == 0 else ()
-        rows, mean_ms, body_count = simulate(shapes, frames, dt, mode, detect, report,
+        rows, mean_ms, body_count = simulate(shapes, frames, dt, detect, report,
                                              spawn_frames, seed + run_index,
                                              frames_to_snap, snapshot_dir,
                                              parallel, workers, run_index * UID_STRIDE,
@@ -327,8 +325,6 @@ def main():
     parser.add_argument("--shapes", type=int, default=80, help="Number of dynamic shapes to drop")
     parser.add_argument("--frames", type=int, default=300, help="Number of frames to simulate")
     parser.add_argument("--dt", type=float, default=1 / 60, help="Time step per frame in seconds")
-    parser.add_argument("--mode", default="friction",
-                        choices=["none", "basic", "rotation", "friction"])
     parser.add_argument("--detect", default="quadtree", choices=["quadtree", "basic"])
     parser.add_argument("--report", type=int, default=30, help="Frames between report lines")
     parser.add_argument("--runs", type=int, default=3, help="Number of runs to average over")
@@ -375,12 +371,12 @@ def main():
         if args.parallel:
             parser.error("--video renders the serial engine; not supported with --parallel")
 
-        record_video(args.shapes, args.frames, args.dt, args.mode, args.detect,
+        record_video(args.shapes, args.frames, args.dt, args.detect,
                      spawn_frames, args.video, args.fps, args.seed)
         return
 
     snapshot_frames = frozenset(int(f) for f in args.snapshot.split(",") if f.strip())
-    run(args.shapes, args.frames, args.dt, args.mode, args.detect, args.report,
+    run(args.shapes, args.frames, args.dt, args.detect, args.report,
         args.runs, spawn_frames, args.seed, snapshot_frames, args.snapshot_dir,
         args.parallel, args.workers, num_slabs, args.substeps)
 

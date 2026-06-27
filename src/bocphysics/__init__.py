@@ -8,7 +8,6 @@ behaviors. It doubles as a teaching aid for programming with BOC.
 from argparse import ArgumentParser
 
 from .config import DetectionKind, Resolution
-from .engine import PhysicsMode
 from .scene import make_pachinko_scene, make_pyramid_scene, make_stack_scene, Scene
 
 PARAMETRIC_SCENES = {"stack": make_stack_scene, "pyramid": make_pyramid_scene,
@@ -26,9 +25,6 @@ def load_scene(name: str, levels):
 def main():
     """Parse command-line arguments and run the simulation."""
     parser = ArgumentParser(description="2D Rigid Physics Simulation")
-    parser.add_argument("--mode", "-m", help="Physics mode to use",
-                        choices=["basic", "friction", "none", "rotation"],
-                        default="friction")
     parser.add_argument("--show-contacts", action="store_true", help="Show contact points")
     parser.add_argument("--debug", "-d", action="store_true", help="Enable debug mode")
     parser.add_argument("--snapshot", "-ss", action="store_true", help="Save a snapshot of the simulation")
@@ -77,7 +73,6 @@ def main():
         resolution = resolution._replace(height=args.height)
 
     simulation = Simulation(resolution=resolution,
-                            physics_mode=PhysicsMode[args.mode.upper()],
                             detection_kind=DetectionKind[args.detect.upper()],
                             debug=args.debug,
                             show_contacts=args.show_contacts,

@@ -18,14 +18,13 @@ import pytest
 from bocphysics import geometry, parallel, transport, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 from bocphysics.physics import Physics
 
 GRAVITY = Matrix.vector([0, 9.81])
 SUB_DT = (1 / 60) / 4
 NUM_SUBSTEPS = 4
-NUM_VEL = 10
 SEEDS = list(range(12))
 
 _next_uid = 0
@@ -180,7 +179,7 @@ def randomise_block(rng, bodies):
 
 def serial_intra_reference(dynamics, floor, interior_uid_pairs):
     """Run one intra sub-step serially and return the resulting state block."""
-    physics = Physics(PhysicsMode.FRICTION)
+    physics = Physics()
     by_uid = {body.uid: body for body in dynamics + [floor]}
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_uid_pairs]
     xpbd.solve_substep(physics, dynamics, pairs, GRAVITY, SUB_DT)
@@ -189,7 +188,7 @@ def serial_intra_reference(dynamics, floor, interior_uid_pairs):
 
 def serial_boundary_reference(dynamics_a, dynamics_b, boundary_uid_pairs):
     """Resolve the seam serially and return both resulting state blocks."""
-    physics = Physics(PhysicsMode.FRICTION)
+    physics = Physics()
     by_uid = {body.uid: body for body in dynamics_a + dynamics_b}
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in boundary_uid_pairs]
     constraints = xpbd.build_contacts(pairs)
@@ -379,7 +378,7 @@ def kinetic_energy(engine):
 
 def settle_serial(seed, num_substeps, frames=SETTLE_FRAMES):
     """Settle the scatter scene to rest on the serial engine."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False,
                            num_substeps=num_substeps)
     build_settle_scene(engine, seed)
@@ -396,7 +395,7 @@ def settle_parallel(seed, num_substeps, frames=SETTLE_FRAMES):
         Uses ParallelStepper with no partition override, so it exercises the
         default -- the equal-population vertical-slab cut.
     """
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False,
                            num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
@@ -412,7 +411,7 @@ def settle_parallel(seed, num_substeps, frames=SETTLE_FRAMES):
 
 def settle_parallel_slabs(seed, num_slabs, num_substeps):
     """Settle the scatter scene with the equal-population vertical-slab cut."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False,
                            num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
@@ -429,7 +428,7 @@ def settle_parallel_slabs(seed, num_slabs, num_substeps):
 @pytest.mark.parametrize("num_slabs", [0, -1])
 def test_slab_count_below_one_is_rejected(num_slabs):
     """A non-positive num_slabs fails loudly rather than silently meaning one patch."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
     with pytest.raises(ValueError):
         parallel.ParallelStepper(engine, num_slabs=num_slabs)
@@ -437,7 +436,7 @@ def test_slab_count_below_one_is_rejected(num_slabs):
 
 def test_default_partition_is_slabs():
     """The default partition is the worker-scaled slab cut, never the quadtree."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
     assert parallel.ParallelStepper(engine).num_slabs == parallel.AUTO_SLABS
     assert parallel.resolve_slab_count(parallel.AUTO_SLABS, 4) == 10
@@ -448,7 +447,7 @@ def test_default_partition_is_slabs():
 
 def settle_parallel_quadtree(seed, num_substeps):
     """Settle the scatter scene with the loose-quadtree fallback (num_slabs=None)."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False,
                            num_substeps=num_substeps)
     engine.next_uid = allocate_uids(64)[0]
@@ -524,7 +523,7 @@ def serial_two_patch_reference(dyn_a, dyn_b, floor, interior_a, interior_b, seam
         seam resolves on top of both patches' fresh state. Returns the final
         packed block for each patch to compare bit-exact against the workers.
     """
-    physics = Physics(PhysicsMode.FRICTION)
+    physics = Physics()
     by_uid = {body.uid: body for body in dyn_a + dyn_b + [floor]}
     pairs_a = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_a]
     pairs_b = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_b]
@@ -544,7 +543,7 @@ def build_seam_drop_scene(drop_speed):
         X straddles a seam: it shares an interior contact with the left support
         and a cross-seam contact with the right one. Both supports are static and
         overlap X so the narrow phase yields a real manifold for each. drop_speed
-        is the downward (y-down) closing speed; tune it across restitution_threshold.
+        is the downward (y-down) closing speed; tune it across the restitution gate.
     """
     x = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(Matrix.vector([0.0, 0.0]))
     left = Circle.create(1.0, 2.0, (90, 90, 90)).move_to(Matrix.vector([-1.0, 1.5]))
@@ -603,7 +602,7 @@ def test_seam_decomposition_suppresses_restitution_above_threshold():
         approach, so the seam rebuilds only a fraction of it. This pins the
         measured divergence so any future change to the seam ordering is caught.
     """
-    physics = Physics(PhysicsMode.FRICTION, restitution=0.5)
+    physics = Physics(restitution=0.5)
 
     mono, deco = seam_outcomes(physics, drop_speed=4.0)
     assert mono > 1.0, "serial order applies a real restitution bounce at the seam"
@@ -621,7 +620,7 @@ def test_seam_decomposition_matches_serial_below_threshold():
         confined to genuine above-gate impacts, which is why resting stacks are
         immune. The position-only seam leaves a negligible difference here.
     """
-    physics = Physics(PhysicsMode.FRICTION, restitution=0.5)
+    physics = Physics(restitution=0.5)
 
     mono, deco = seam_outcomes(physics, drop_speed=0.05)
     assert abs(mono - deco) < 2e-3, "below the gate the seam order barely matters"
@@ -642,8 +641,8 @@ class TestWorkerParity:
         """Start the runtime and seed the set-once canonical solve config."""
         start(worker_count=4)
         notice_seed(parallel.CONFIG_KEY,
-                    parallel.SolveConfig(Physics(PhysicsMode.FRICTION), GRAVITY,
-                                         SUB_DT, NUM_VEL, False))
+                    parallel.SolveConfig(Physics(), GRAVITY,
+                                         SUB_DT, False))
 
     @classmethod
     def teardown_class(cls):
@@ -851,7 +850,7 @@ class TestSettle:
             than locking in the first concrete count -- the reason _slab_request
             exists at all.
         """
-        engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+        engine = PhysicsEngine(1200, 900,
                                DetectionKind.LOOSE_QUADTREE, show_contacts=False)
         stepper = parallel.ParallelStepper(engine)
         assert stepper.num_slabs == parallel.AUTO_SLABS

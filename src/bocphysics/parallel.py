@@ -63,7 +63,6 @@ class SolveConfig(NamedTuple):
     physics: Physics
     gravity: Matrix
     sub_dt: float
-    num_velocity_iterations: int
     batched: bool
 
 
@@ -314,7 +313,6 @@ class ParallelStepper:
         self.engine_pinned = PinnedCown(self.engine)
         sub_dt = dt / self.engine.num_substeps
         config = SolveConfig(self.engine.physics, self.engine.gravity, sub_dt,
-                             self.engine.num_velocity_iterations,
                              solver.use_batched_solver)
         notice_seed(CONFIG_KEY, config)
 

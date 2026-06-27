@@ -6,7 +6,7 @@ from bocpy import Matrix
 
 from . import solver, xpbd, xpbd_kernel
 from .bodies import AABB, RigidBody
-from .config import DetectionKind, PhysicsMode
+from .config import DetectionKind
 from .detection import Detection
 from .physics import Physics
 
@@ -25,24 +25,21 @@ class PhysicsEngine:
     Args:
         width (float): The width (in pixels) of the simulation window
         height (float): The height (in pixels) of the simulation window
-        mode (PhysicsMode): The physics mode to use
         detection_kind (DetectionKind): The collision detection algorithm to use
         show_contacts (bool): Whether to display contact points
         height_in_meters (float): The height of the simulation window in meters
         num_substeps (int): Sub-steps per frame for the substep solver
-        num_velocity_iterations (int): Velocity iterations per sub-step for the
-                                       substep solver
     """
 
     def __init__(self, width: float, height: float,
-                 mode: PhysicsMode, detection_kind: DetectionKind,
+                 detection_kind: DetectionKind,
                  show_contacts: bool, height_in_meters=30,
-                 num_substeps=4, num_velocity_iterations=10):
-        """Create the engine from the window size, physics mode, and detection kind."""
+                 num_substeps=4):
+        """Create the engine from the window size and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
         self.height = height_in_meters
-        self.physics = Physics(mode)
+        self.physics = Physics()
         self.bounds = AABB(-self.width / 2, -self.height / 2,
                            self.width / 2, self.height / 2)
         self.detection = Detection(detection_kind, AABB(-self.width, -self.height,
@@ -55,9 +52,7 @@ class PhysicsEngine:
         self.center = Matrix.vector([self.width / 2, self.height / 2])
         self.contacts: Set[Tuple[float, float]] = set()
         self.show_contacts = show_contacts
-        self.mode = mode
         self.num_substeps = num_substeps
-        self.num_velocity_iterations = num_velocity_iterations
         self.swept_slop = 0.25
         self.systems = {
             "physics": ["position", "angle",

@@ -7,7 +7,7 @@ import pytest
 
 from bocphysics import solver
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 from bocphysics.scene import make_golden_scene, make_pachinko_scene
 
@@ -15,7 +15,7 @@ from bocphysics.scene import make_golden_scene, make_pachinko_scene
 def make_engine(num_substeps=None) -> PhysicsEngine:
     """Create a windowless engine with friction physics and quadtree detection."""
     extra = {} if num_substeps is None else {"num_substeps": num_substeps}
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
+    return PhysicsEngine(1200, 900,
                          DetectionKind.QUADTREE, show_contacts=False, **extra)
 
 
@@ -72,7 +72,7 @@ def test_remove_outside_culls_dynamics_but_keeps_statics():
 
 def test_portrait_world_keeps_bodies_in_top_band():
     """A portrait world keeps top-band bodies a width-based top edge would clip."""
-    engine = PhysicsEngine(600, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(600, 900,
                            DetectionKind.QUADTREE, show_contacts=False,
                            height_in_meters=36)
     body = Circle.create(0.6, 2.0, (10, 20, 30)).move_to(Matrix.vector([0, -15]))
@@ -206,7 +206,7 @@ def test_loose_quadtree_settles_like_quadtree():
     """
     def settle(detection):
         """Run the golden scene to rest under one detection kind."""
-        engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION, detection,
+        engine = PhysicsEngine(1200, 900, detection,
                                show_contacts=False)
         build_golden_scene(engine, GOLDEN_SEED)
         for _ in range(GOLDEN_FRAMES):

@@ -20,7 +20,7 @@ Run from the repo root with the project venv active::
 import argparse
 
 from bocphysics.collisions import detect_collision
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 from bocphysics.scene import (make_pyramid_scene, make_stack_scene,
                               STACK_BOX_SIZE, STACK_FLOOR_TOP)
@@ -85,8 +85,7 @@ def horizontal_span(bodies) -> float:
 
 def measure(levels: int, frames: int, dt: float, tail: int, layout: str = "column") -> dict:
     """Settle a stack and return its stability metrics."""
-    engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                           DetectionKind.QUADTREE, show_contacts=False)
+    engine = PhysicsEngine(1200, 900, DetectionKind.QUADTREE, show_contacts=False)
     if layout == "pyramid":
         build_pyramid(engine, levels)
     else:

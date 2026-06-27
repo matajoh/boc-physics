@@ -9,14 +9,13 @@ import pytest
 from bocphysics import xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
-from bocphysics.config import PhysicsMode
 from bocphysics.physics import Physics
 
 GRAVITY = Matrix.vector([0, 9.81])
 SUB_DT = (1 / 60) / 4
-FRICTION = Physics(PhysicsMode.FRICTION)
-ELASTIC = Physics(PhysicsMode.FRICTION, restitution=1.0, dynamic_friction=0.0)
-INELASTIC = Physics(PhysicsMode.FRICTION, restitution=0.0)
+FRICTION = Physics()
+ELASTIC = Physics(restitution=1.0, dynamic_friction=0.0)
+INELASTIC = Physics(restitution=0.0)
 
 
 def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
@@ -231,7 +230,7 @@ def test_solver_is_deterministic():
 
 def measured_restitution(restitution, frames=150):
     """Drop a ball and return its empirical coefficient of restitution (rebound / impact speed)."""
-    physics = Physics(PhysicsMode.FRICTION, restitution=restitution, dynamic_friction=0.0)
+    physics = Physics(restitution=restitution, dynamic_friction=0.0)
     floor = make_static_box(0, 10)
     ball = Circle.create(0.5, 2.0, (200, 100, 50))
     ball.physics = True

@@ -7,7 +7,6 @@ import pytest
 
 from bocphysics import geometry, transport, xpbd
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import PhysicsMode
 from bocphysics.physics import Physics
 
 
@@ -124,7 +123,7 @@ def test_evict_retired_is_a_noop_within_one_version():
 def test_rehydrated_solve_matches_serial(seed):
     """Solving on rehydrated shells reproduces the serial solve bit-exactly."""
     rng = random.Random(seed)
-    physics = Physics(PhysicsMode.FRICTION)
+    physics = Physics()
     gravity = Matrix.vector([0, 9.81])
     sub_dt = (1 / 60) / 4
 

@@ -6,7 +6,7 @@ from bocpy import Matrix
 import pytest
 
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
 from bocphysics.patches import build_partition, build_slab_partition, slab_boundaries
 from bocphysics.quadtree import QuadTree
@@ -14,7 +14,7 @@ from bocphysics.quadtree import QuadTree
 
 def make_engine(detection=DetectionKind.QUADTREE) -> PhysicsEngine:
     """Create a windowless engine with the given broad-phase detection kind."""
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION, detection, show_contacts=False)
+    return PhysicsEngine(1200, 900, detection, show_contacts=False)
 
 
 def populate_cluster(engine, count: int, seed: int):
