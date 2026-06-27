@@ -6,27 +6,50 @@ follow well-trodden paths from games physics and real-time simulation. This page
 collects the primary sources behind those choices so you can read the original
 derivations and go deeper than these notes do.
 
-The entries are grouped by the part of the engine they speak to: the impulse
-solver itself, the two families of parallel solve (graph colouring and island
-tasks), the principled fix for parallel jitter, and the substepping literature
-that informs the fidelity knobs.
+The entries are grouped by the part of the engine they speak to: the
+position-based solver itself and the substepping that drives it, the two families
+of parallel solve (graph colouring and island tasks), the principled fix for
+parallel jitter, and finally the classical impulse solver it is contrasted
+against.
 
-## The impulse solver
+## The position-based solver
 
-<a id="catto-2009"></a>
-**Catto 2009** — Erin Catto, *Modeling and Solving Constraints*, GDC 2009.
-[PDF](https://box2d.org/files/ErinCatto_ModelingAndSolvingConstraints_GDC2009.pdf).
-The canonical derivation of the sequential-impulse / projected Gauss–Seidel
-solver that [Chapter 2](02-serial-engine.md) builds, and the basis of Box2D. If
-you read one source here, read this one: it is where the impulse formula and the
-iterate-to-convergence loop come from.
+bocphysics resolves contacts with **Extended Position-Based Dynamics**: it
+corrects positions to remove penetration, then reads velocities back from the
+motion. These are the sources that solver and its substepping knob come from.
 
-<a id="box2d-v3"></a>
-**Box2D** — Erin Catto, *Box2D: A 2D physics engine for games*.
-[box2d.org](https://box2d.org/). The reference implementation of the above. Box2D
-v3 adds exactly the two ideas this tutorial leans on for performance — graph
-colouring of the constraint graph and wide SIMD evaluation — making it the
-closest production analogue to the path from [Chapter 3](03-batching.md) onward.
+<a id="muller-2020"></a>
+**Müller 2020** — Matthias Müller, Miles Macklin et al., *Detailed Rigid Body
+Simulation with Extended Position Based Dynamics*, SCA 2020.
+[PDF](https://matthias-research.github.io/pages/publications/PBDBodies.pdf). The
+direct basis of this engine's solver: it extends XPBD to rigid bodies with the
+integrate → position-solve → derive-velocity → friction/restitution sub-step that
+[Chapter 2](02-serial-engine.md) implements. Read this one first.
+
+<a id="macklin-2016"></a>
+**Macklin 2016** — Miles Macklin, Matthias Müller, Nuttapong Chentanez, *XPBD:
+Position-Based Simulation of Compliant Constrained Dynamics*, MIG 2016.
+[PDF](http://mmacklin.com/xpbd.pdf). The compliant position-based formulation the
+above builds on, and where the **compliance** parameter comes from — zero for the
+rigid contacts in this engine, non-zero for soft constraints.
+
+<a id="macklin-2019"></a>
+**Macklin 2019** — Miles Macklin, Kier Storey, Michelle Lu et al., *Small Steps in
+Physics Simulation*, SCA 2019. [PDF](http://mmacklin.com/smallsteps.pdf). Shows
+that many small substeps beat a few large ones for the same total work — the
+result behind taking a single solve per sub-step and turning up `num_substeps`
+instead of iterating. The paper's headline is that a handful of substeps already
+suffices; this engine measured its own knee at six to eight substeps for a
+settled pile and ships a default of **eight**.
+
+<a id="catto-2011"></a>
+**Catto 2011** — Erin Catto, *Soft Constraints*, GDC 2011.
+[PDF](https://box2d.org/files/ErinCatto_SoftConstraints_GDC2011.pdf). The
+soft-constraint formulation that reframes a stiff constraint as a tunable
+spring-damper — the same compliance idea XPBD uses, seen from the
+sequential-impulse side, and the basis of the temporal Gauss–Seidel (TGS) soft
+solver in Box2D v3. Useful for understanding why position-based and soft-impulse
+solvers converge on the same small-substep behaviour.
 
 ## Parallelising the solver: graph colouring
 
@@ -72,28 +95,27 @@ each body's effective-mass term by its contact count, then apply impulses with t
 full mass. This is the literature behind [Chapter 6](06-future-work.md)'s note on
 how the seam-restitution gap could be closed without giving up parallelism.
 
-## Substepping and position-based methods
+## The classical alternative: sequential impulses
 
-<a id="macklin-2019"></a>
-**Macklin 2019** — Miles Macklin, Kier Storey, Michelle Lu et al., *Small Steps in
-Physics Simulation*, SCA 2019. [PDF](http://mmacklin.com/smallsteps.pdf). Shows
-that many small substeps beat a few large ones for the same total work — the
-result behind [Chapter 2](02-serial-engine.md)'s default of four substeps per
-frame rather than more solver iterations.
+bocphysics solves contacts in position space, but the more common approach in 2D
+games physics is the *sequential-impulse* solver. These two sources are the
+canonical reference for it, and the origin of the graph-colouring trick
+[Chapter 3](03-batching.md) uses to batch the solve.
 
-<a id="macklin-2016"></a>
-**Macklin 2016** — Miles Macklin, Matthias Müller, Nuttapong Chentanez, *XPBD:
-Position-Based Simulation of Compliant Constrained Dynamics*, MIG 2016.
-[PDF](http://mmacklin.com/xpbd.pdf). The compliant position-based formulation that
-underlies the modern small-substep solvers; useful background for why substepping
-and stiffness interact the way they do.
+<a id="catto-2009"></a>
+**Catto 2009** — Erin Catto, *Modeling and Solving Constraints*, GDC 2009.
+[PDF](https://box2d.org/files/ErinCatto_ModelingAndSolvingConstraints_GDC2009.pdf).
+The canonical derivation of the sequential-impulse / projected Gauss–Seidel
+solver, and the basis of Box2D. It is where the classical impulse formula and the
+iterate-to-convergence loop come from — the velocity-space counterpart to the
+position-space solve this engine uses.
 
-<a id="muller-2020"></a>
-**Müller 2020** — Matthias Müller, Miles Macklin et al., *Detailed Rigid Body
-Simulation with Extended Position Based Dynamics*, SCA 2020.
-[PDF](https://matthias-research.github.io/pages/publications/PBDBodies.pdf).
-Extends XPBD to rigid bodies; a pointer to where the position-based branch of the
-field goes beyond the impulse solver this engine implements.
+<a id="box2d-v3"></a>
+**Box2D** — Erin Catto, *Box2D: A 2D physics engine for games*.
+[box2d.org](https://box2d.org/). The reference implementation of the above. Box2D
+v3 adds exactly the two ideas this tutorial leans on for performance — graph
+colouring of the constraint graph and wide SIMD evaluation — making it the
+closest production analogue to the path from [Chapter 3](03-batching.md) onward.
 
 ---
 

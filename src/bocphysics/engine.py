@@ -98,15 +98,15 @@ class PhysicsEngine:
 
     def solve_substep(self, bodies: List[RigidBody],
                       pairs: List[Tuple[RigidBody, RigidBody]], sub_dt: float):
-        """Advance every dynamic body, separating sub-steps from velocity iterations.
+        """Advance every dynamic body over the frame's sub-steps with the XPBD solver.
 
         Description:
-            Each sub-step integrates the bodies then builds every pair's
-            contact manifold once, since the geometry barely moves within a
-            sub-step. The velocity solver then iterates over those cached
-            manifolds, converging the coupled contacts without paying the
-            narrow-phase cost again. The work is delegated to the shared
-            solver core so the parallel path runs the identical solve.
+            Each sub-step integrates the bodies, re-evaluates the narrow phase
+            at the new pose, projects penetrating contacts apart in a single
+            position pass, derives velocities from the position delta, then runs
+            one velocity pass for friction and restitution. The work is
+            delegated to the shared solver core so the parallel path runs the
+            identical solve.
         """
         contacts = self.contacts if self.show_contacts else None
         if solver.use_batched_solver:

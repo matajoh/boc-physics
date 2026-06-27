@@ -57,21 +57,22 @@ against:
 
 | Frame | ms/frame | Kinetic energy | Penetration |
 |------:|---------:|---------------:|------------:|
-|    30 |   0.17 ± 0.09 |     306.81 ± 26.06 |  2.00 ± 0.00 |
-|    90 |   1.12 ± 0.28 |    7272.18 ± 179.91 |  2.16 ± 0.22 |
-|   150 |   1.81 ± 0.24 |   13636.04 ± 1002.83 |  2.01 ± 0.03 |
-|   210 |   7.49 ± 0.99 |    7650.30 ± 1695.14 |  2.08 ± 0.04 |
-|   270 |  18.88 ± 1.96 |    2294.60 ± 572.75 |  2.52 ± 0.07 |
-|   300 |  24.21 ± 1.88 |     249.32 ± 73.20 |  2.41 ± 0.07 |
+|    30 |   0.18 ± 0.06 |     129.73 ± 7.82 |  2.00 ± 0.00 |
+|    90 |   0.76 ± 0.15 |    3065.92 ± 140.69 |  2.00 ± 0.00 |
+|   150 |   1.50 ± 0.09 |    6489.65 ± 293.70 |  2.00 ± 0.00 |
+|   210 |   4.00 ± 0.35 |    5473.43 ± 402.60 |  2.02 ± 0.02 |
+|   270 |   8.69 ± 0.40 |    4124.11 ± 398.76 |  2.06 ± 0.05 |
+|   300 |  11.72 ± 0.70 |    1729.56 ± 104.55 |  2.03 ± 0.01 |
 
-Mean **7.2 ms/frame** over the run. Three things to read off it. **Cost climbs
+Mean **3.7 ms/frame** over the run. Three things to read off it. **Cost climbs
 steeply** as bodies accumulate and the separate piles merge into one big island —
-from a fraction of a millisecond early on to ~26 ms at the dense final frame.
-**Kinetic energy peaks mid-run**, around frame 120, while shapes are still raining
-in, then collapses by an order of magnitude as the pile settles. And
-**penetration stays bounded near 2** the whole way through — the solver keeps
-overlaps in check even as the contact count explodes. That last column is the
-golden-master behaviour the parallel path must not break.
+from a fraction of a millisecond early on to ~12 ms at the dense final frame.
+**Kinetic energy peaks mid-run**, around frame 150, while shapes are still raining
+in, then falls steeply as the pile sheds energy into its contacts. And
+**penetration stays pinned near 2** the whole way through — the position solve
+keeps overlaps in check even as the contact count explodes, never drifting past
+~2.06. That last column is the golden-master behaviour the parallel path must not
+break.
 
 ## The parallel result
 
@@ -80,21 +81,22 @@ slabs:
 
 | Frame | ms/frame (serial) | ms/frame (8 workers) | Penetration (parallel) |
 |------:|------------------:|---------------------:|-----------------------:|
-|    30 |  0.17 | 0.66 ± 0.10 | 2.00 ± 0.00 |
-|   150 |  1.81 | 2.45 ± 0.16 | 2.01 ± 0.01 |
-|   210 |  7.49 | 4.93 ± 0.06 | 2.24 ± 0.11 |
-|   270 | 18.88 | 7.37 ± 0.44 | 3.31 ± 0.21 |
-|   300 | 24.21 | 8.12 ± 0.18 | 3.35 ± 0.22 |
+|    30 |  0.18 | 0.70 ± 0.04 | 2.00 ± 0.00 |
+|   150 |  1.50 | 2.71 ± 0.20 | 2.00 ± 0.00 |
+|   210 |  4.00 | 4.19 ± 0.11 | 2.01 ± 0.01 |
+|   270 |  8.69 | 5.00 ± 0.26 | 2.02 ± 0.02 |
+|   300 | 11.72 | 6.08 ± 0.30 | 2.03 ± 0.03 |
 
-Averaged over the run the parallel path is **3.8 ms/frame against the serial 7.2 —
-roughly 1.9x overall**, and about **3.0x at the dense final frame** (24.2 → 8.1
-ms). The pattern is the important part: early frames are actually *slower* in
-parallel. When the scene is a handful of scattered singletons there is almost no
-independent work to fan out, and the cost of cutting the world, packing state
-blocks, and scheduling behaviors is pure overhead. The speed-up only appears once
-the scene is dense enough to keep eight workers busy — which is exactly the regime
-where the serial path was hurting. **Parallelism buys the most where it is needed
-most**, and costs a little where it is not.
+Averaged over the run the parallel path is **3.2 ms/frame against the serial 3.7 —
+a modest ~1.15x overall**, climbing to about **1.9x at the dense final frame**
+(11.7 → 6.1 ms). The pattern is the important part: early frames are actually
+*slower* in parallel. When the scene is a handful of scattered singletons there is
+almost no independent work to fan out, and the cost of cutting the world, packing
+state blocks, and scheduling behaviors is pure overhead — which is why the modest
+overall figure is dominated by the long, sparse early phase. The speed-up only
+appears once the scene is dense enough to keep eight workers busy — which is
+exactly the regime where the serial path was hurting. **Parallelism buys the most
+where it is needed most**, and costs a little where it is not.
 
 ## The live overlay versus the benchmark
 
@@ -113,7 +115,7 @@ simulation --debug --scene open_box --parallel # parallel, BOC workers
 
 In the **serial** build the physics step runs on the main thread, synchronously,
 inside the same callback that then draws the frame. One step happens per drawn
-frame, so *physics and rendering are conflated*: a 26 ms step is 26 ms the main
+frame, so *physics and rendering are conflated*: a 12 ms step is 12 ms the main
 thread cannot spend drawing, and the moment the solver gets heavy the rendered
 **FPS falls in lockstep**. The overlay's `Physics` number here is exactly that
 synchronous step time, measured with a stopwatch around
@@ -170,11 +172,11 @@ a deep, densely-connected seam graph — around **nine** colours in this scene �
 its per-sub-step critical path is nine seam-layers deep. The slab cut drops that to
 **two-to-four** colours, because almost every contact a stack relies on stays
 *interior* to a single slab. Shallower seams mean a shorter critical path: under
-the same eight workers the slab cut averages **3.8 ms/frame** against the quadtree
-cut's **5.5 ms/frame** — about **1.4x faster** — and, tellingly, its penetration
-at rest holds near ~3.3 where the quadtree cut drifts past ~4.3, because each
-horizontal quadtree seam slices an extra load-bearing contact out of the
-interior solve. The quadtree cut is still in the engine — pass `--quadtree-cut`
+the same eight workers the slab cut averages **3.2 ms/frame** against the quadtree
+cut's **4.3 ms/frame** — about **1.3x faster** — and, tellingly, its penetration
+at rest holds near ~2.03 where the quadtree cut settles marginally looser at
+~2.06, because each horizontal quadtree seam slices an extra load-bearing contact
+out of the interior solve. The quadtree cut is still in the engine — pass `--quadtree-cut`
 to select it — precisely so this comparison can be reproduced rather than
 asserted.
 
@@ -187,35 +189,41 @@ bodies vertically, so the cut that runs vertically wins.
 The colour-batched solver from [Chapter 3](03-batching.md) is an orthogonal lever:
 it changes *how* a group of contacts is evaluated, not *where*. Enabling it on the
 **serial** path (the module toggle `solver.use_batched_solver`, exposed as
-`--batched`) takes the same scene from 7.2 to **5.2 ms/frame — about 1.4x** — by
-replacing the per-contact Python loop with dense matrix kernels, with the pile
-still settling correctly (penetration ~2.6 at rest versus the scalar 2.4, the
-expected effect of visiting contacts in colour order rather than apex-first). It
-is off by default and validated by settling-band tests rather than the bit-exact
-golden master, for exactly the reordering reason the parallel path is. The two
-levers compose: batching shrinks the cost of each patch's solve, partitioning fans
-those solves across workers.
+`--batched`) does *not* speed this scene up — it runs marginally slower, **3.9
+against 3.7 ms/frame**. At 80 bodies the cost is dominated by broad- and
+narrow-phase collision detection, not the contact solve, so swapping the
+per-contact Python loop for dense matrix kernels trades a small packing overhead
+for no visible win. The pile still settles identically (penetration ~2.05 at rest
+versus the scalar 2.03, the expected effect of visiting contacts in colour order
+rather than apex-first). It is off by default and validated by settling-band tests
+rather than the bit-exact golden master, for exactly that reordering reason. The
+kernel earns its keep where a single colour holds many contacts, not at this
+scale; the two levers stay orthogonal — batching changes *how* a colour is solved,
+partitioning *where*.
 
 ## The fidelity trade-off, quantified
 
 Now the honest cost. Look again at the penetration column of the parallel table:
-where the serial path holds near 2 all the way to rest, the slab path **drifts
-toward ~3** late in the run. The pile settles slightly *looser* in parallel.
+it holds near 2 all the way to rest, just as the serial path does. At eight
+sub-steps the position solve is tight enough that cutting the pile across workers
+costs no measurable resting overlap — the headline fidelity worry from the impulse
+era has simply closed. The remaining cost is subtler and lives in *velocity*, not
+penetration.
 
-This is not a bug to be patched away; it is a direct and predictable consequence
+It is not a bug to be patched away; it is a direct and predictable consequence
 of the decomposition. When one settling pile is cut across several workers, its
 contacts are resolved in a different *order* than the serial sweep would use —
-and order is exactly what projected Gauss–Seidel depends on. There is a specific,
-documented instance: a seam manifold is built *after* each patch has already
-velocity-solved its interior, so the restitution target it samples sees an
-already-damped closing speed. The two paths therefore **agree at or below the
-restitution threshold** — the resting, stacking regime the engine is built for —
+and order is exactly what a Gauss–Seidel solve depends on. There is a specific,
+documented instance: a seam's contacts are built *after* each patch has already
+solved its interior, so the closing speed the seam samples for restitution sees
+an already-damped interior velocity. The two paths therefore **agree at or below
+the restitution gate** — the resting, stacking regime the engine is built for —
 but the decomposed seam suppresses restitution *above* it.
 
 The crucial discipline is that this gap is **measured and locked**, not hidden.
 The seam-decomposition tests in
 [`test/test_parallel.py`](../../test/test_parallel.py) pin the divergence on both
-sides of the restitution threshold, so it cannot silently widen. This is also why
+sides of the restitution gate, so it cannot silently widen. This is also why
 the batched and parallel paths are validated against *settling-band* tests — does
 the pile come to rest in the right place, within tolerance? — rather than against
 the bit-exact golden master that guards the serial scalar solver. A parallel
@@ -225,17 +233,18 @@ physics *settles correctly*.
 
 ## Where we are
 
-The measurements back the design. The slab cut delivers roughly 1.9x overall and
-3.0x where the work is densest, it beats the quadtree cut by following gravity's
-grain, and its one fidelity cost — a slightly looser settle, restitution
-suppressed above threshold at seams — is bounded, explained, and pinned by tests.
+The measurements back the design. The slab cut delivers a modest ~1.15x overall
+and ~1.9x where the work is densest, it beats the quadtree cut by following
+gravity's grain, and its one fidelity cost — restitution suppressed above the gate
+at seams, with resting penetration held near 2 — is bounded, explained, and pinned
+by tests.
 
 That leaves the cost honestly on the table rather than swept under it.
 [Chapter 6](06-future-work.md) takes the remaining issues seriously: what it would
 take to close the seam-restitution gap, where the partitioning could be smarter,
 and the other limitations a teaching engine should be candid about.
 
-[^bench]: All benchmark figures in this chapter were captured on 2026-06-24 from
+[^bench]: All benchmark figures in this chapter were captured on 2026-06-27 from
     bocphysics 0.4 (bocpy 0.13.0) on CPython 3.14.4, on an Intel Core i7-14700F
     (28 logical cores) under Linux (WSL2). Each configuration is the mean ± one
     standard deviation over five runs of

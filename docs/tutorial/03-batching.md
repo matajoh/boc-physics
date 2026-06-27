@@ -1,11 +1,11 @@
 # Chapter 3: Batching for hardware
 
 [Chapter 2](02-serial-engine.md) ended on a confession. The serial engine is
-correct and readable, but its hot loop — the projected Gauss–Seidel sweep that
-resolves every contact, several times, every sub-step — is a Python `for` loop
-doing a handful of tiny floating-point operations per contact. On a busy frame
-that is *tens of thousands* of trips around the interpreter, and the interpreter
-overhead dwarfs the actual arithmetic.
+correct and readable, but its hot loop — the XPBD position and velocity passes
+that walk every contact, every sub-step — is a Python `for` loop doing a handful
+of tiny floating-point operations per contact. On a busy frame that is *tens of
+thousands* of trips around the interpreter, and the interpreter overhead dwarfs
+the actual arithmetic.
 
 This chapter is about closing that gap **without changing scheduler or adding a
 single thread**. We reshape the data so the same solve runs as a few dense
@@ -15,28 +15,29 @@ reshaped, body-disjoint form is exactly what lets the solve be handed to
 parallel workers later without tearing.
 
 The batched solver lives in
-[`src/bocphysics/kernel.py`](../../src/bocphysics/kernel.py); it is wired into
-the serial path through `resolve_pair_list` in
-[`solver.py`](../../src/bocphysics/solver.py).
+[`src/bocphysics/xpbd_kernel.py`](../../src/bocphysics/xpbd_kernel.py); it is
+wired into the serial path through the `use_batched_solver` branch in
+`PhysicsEngine.solve_substep`.
 
 ## Why the scalar loop is slow
 
-Look again at the shape of the serial velocity solve from Chapter 2:
+Look again at the shape of the serial solve from Chapter 2. Each sub-step makes
+one position pass and one velocity pass, and each pass is a Python loop over the
+contacts:
 
 ```python
-for _ in range(num_velocity_iterations):
-    for constraint in constraints:
-        physics.apply_accumulated(constraint, ...)
+for constraint in constraints:
+    solve_velocity(physics, constraint, ...)
 ```
 
-Every `apply_accumulated` call does the same thing: read two bodies' velocity
-and spin, compute a relative velocity, divide by an effective mass, clamp, and
-write the result back. The *arithmetic* is trivial — a dozen multiplies and
-adds. The *cost* is everything around it: a Python function call, attribute
-lookups on the constraint, boxing each intermediate into a Python float, and the
-bytecode dispatch for every single operation. For one contact this is invisible.
-For a settled pyramid of a few hundred bodies, with ten velocity iterations
-inside four sub-steps, it is the whole frame budget.
+Every `solve_velocity` call does the same thing: read two bodies' velocity and
+spin, compute a relative velocity, divide by an effective mass, clamp, and write
+the result back. The *arithmetic* is trivial — a dozen multiplies and adds. The
+*cost* is everything around it: a Python function call, attribute lookups on the
+constraint, boxing each intermediate into a Python float, and the bytecode
+dispatch for every single operation. For one contact this is invisible. For a
+settled pyramid of a few hundred bodies, with eight sub-steps each running a
+position and a velocity pass, it is the whole frame budget.
 
 The fix is the same one the integrator already used in Chapter 1. There,
 `integrate_block` advanced *every* dynamic body in three operations by stacking
@@ -60,9 +61,9 @@ integration, **contacts are not independent**.
 ## The write-hazard that blocks naïve batching
 
 Integration touches each body exactly once, so stacking the bodies and updating
-them all at once is trivially safe. A velocity iteration is different: a single
-body can be in many contacts at once — the box at the bottom of a stack touches
-the floor *and* the box above it *and* the box beside it. Each of those contacts
+them all at once is trivially safe. A contact pass is different: a single body
+can be in many contacts at once — the box at the bottom of a stack touches the
+floor *and* the box above it *and* the box beside it. Each of those contacts
 wants to read that body's velocity and add an impulse to it.
 
 If we tried to solve every contact in one batched shot, two contacts sharing a
@@ -72,7 +73,7 @@ of data race the rest of this tutorial is about avoiding.
 
 The serial loop sidesteps the hazard for free: it visits contacts one at a time,
 so each one reads the velocity the previous one just wrote. That *use-the-latest*
-ordering is the "Gauss–Seidel" in projected Gauss–Seidel. To batch the solve we
+ordering is what makes the pass a **Gauss–Seidel** sweep. To batch the solve we
 have to recover that safety without giving up the bulk update — and the tool for
 that is graph colouring.
 
@@ -131,7 +132,7 @@ is identical no matter how many workers run later — a property the parallel
 chapters lean on hard.
 
 One subtlety: a **static** body (the floor) has zero inverse mass, so writing an
-impulse onto it changes nothing. `colour_manifolds` gives every static occurrence
+impulse onto it changes nothing. `colour_contacts` gives every static occurrence
 a *fresh negative id* so two contacts that both touch the floor are never forced
 into different colours on the floor's account — only shared *movable* bodies
 create a conflict.
@@ -140,28 +141,31 @@ create a conflict.
 
 With the contacts coloured, a colour is solved in three moves that mirror the SoA
 integrator: **gather** the bodies' state, **compute** the impulses row-wise, and
-**scatter** the results back.
+**scatter** the results back. XPBD runs this twice per colour — once for the
+position pass and once for the velocity pass — but both have the same shape, so
+the velocity pass is enough to see the idea.
 
-First the bodies a colour touches are packed into velocity, spin, and
-inverse-mass blocks (`pack_bodies`), and each contact records the *row index* of
-its two bodies. Packing the contacts (`pack_contacts`) stacks the normals,
-tangents, lever arms, and effective-mass denominators into per-contact $(K
-\times n)$ blocks. Then one iteration is pure array arithmetic:
+First the bodies a colour touches are packed into position, velocity, spin, and
+inverse-mass blocks (`pack_poses`, `pack_bodies`), and each contact records the
+*row index* of its two bodies. Packing the contacts (`pack_colour`) stacks the
+normals, lever arms, penetration depths, and pre-solve closing speeds into
+per-contact $(K \times n)$ blocks. Then a pass is pure array arithmetic:
 
 ```python
 va = vel[idx_a]            # gather both bodies' velocity, one row per contact
 vb = vel[idx_b]
-rel = (vb + blocks["rb_perp"] * wb) - (va + blocks["ra_perp"] * wa)
-vn  = rel.vecdot(n_block, axis=1)
-j   = ((blocks["v_target"] - vn) / blocks["denom"] * blocks["weight"]).clip(0.0, INF)
-impulse = j * n_block
+rel = (vb + block.rb_perp * spin_b) - (va + block.ra_perp * spin_a)
+vn  = rel.vecdot(normal, axis=1)
+rebound = (e * block.bias * -1.0).clip(0.0, INF)   # restitution, gated per row
+impulse = normal * ((vn * -1.0 + rebound) / w_n)
 ```
 
 `vel[idx_a]` is a **gather**: it builds a per-contact block by pulling the row
-each contact named. The impulse for every contact in the colour is computed in
-one shot — no Python loop over contacts — and the `clip(0, inf)` reproduces the
-scalar solver's *push-only* rule (a contact may only push bodies apart, never
-pull them together) across the whole block at once.
+each contact named. The velocity change for every contact in the colour is
+computed in one shot — no Python loop over contacts — and the row-wise `clip`
+reproduces the scalar solver's restitution gate across the whole block at once.
+The position pass is the same shape: it gathers poses, computes `depth / w` per
+contact, and scatters the push-out onto the position and angle blocks.
 
 The result is written back with a **scatter-add**:
 
@@ -171,7 +175,7 @@ vel.put(idx_b, dvb, accumulate=True)
 ```
 
 `put(accumulate=True)` folds repeated row indices additively, so a two-point
-manifold that writes both contact points onto the same body sums correctly.
+contact that writes both contact points onto the same body sums correctly.
 Within the colour the bodies are disjoint, so no two *different* contacts ever
 write the same row — the hazard is gone by construction, and the batched update
 for one colour is **exactly** the scalar sweep over that colour, body for body.
@@ -179,37 +183,40 @@ for one colour is **exactly** the scalar sweep over that colour, body for body.
 ## Across colours: still Gauss–Seidel
 
 A colour is internally hazard-free, but the colours are not independent of each
-other — the floor is in colour 0 *and* colour 1. So the colours are still solved
-**in sequence**, one after another, each seeing the velocities the previous
-colours just wrote:
+other — the floor is in colour 0 *and* colour 1. So the colours are solved **in
+sequence**, one after another, each seeing the positions and velocities the
+previous colours just wrote:
 
 ```python
-for _ in range(num_velocity_iterations):
-    for (blocks, idx_a, idx_b), lam in zip(packed, lambdas):
-        solve_colour(physics, vel, spin, inv_m, inv_i, blocks, idx_a, idx_b, lam)
+lambdas = [position_kernel(pos, ang, inv_m, inv_i, block) for block in colours]
+...
+for block, lam_n in zip(colours, lambdas):
+    velocity_kernel(physics, vel, spin, inv_m, inv_i, block, lam_n, h, g)
 ```
 
-This is the same projected Gauss–Seidel as the serial path — *use the latest
+This is the same **Gauss–Seidel** ordering as the serial path — *use the latest
 value* — but the unit of work is now a whole colour instead of a single contact.
 Inside a colour the update is a batched Jacobi sweep (all reads, then all
-writes); across colours it is Gauss–Seidel. The accumulated-impulse bookkeeping
-from Chapter 2 survives intact: each colour carries a running normal and tangent
-impulse `lam` across the iterations, clamps the *total*, and applies only the
-change, so a later sweep can still release an earlier over-push.
+writes); across colours it is Gauss–Seidel. The position-pass lambdas are carried
+straight into the velocity pass, exactly as the serial solver hands its push-out
+magnitude to friction — the only difference is that a whole colour's worth is
+computed at once.
 
-There is one honest cost to record. The serial FRICTION path visits contacts in
-a gravity-aligned, apex-first order; the batched path visits them in
-colour-disjoint order. Both are valid Gauss–Seidel sweeps over the same
-constraints, but a different visiting order is a different re-linearisation, so
-the two do **not** agree bit-for-bit at a finite iteration count. They converge to
-the same settled solution, which is why the batched kernel is validated by
-*settling-band* tests — does the pile come to rest in the right place? — rather
-than against the bit-exact golden master that guards the scalar path.
+There is one honest cost to record. Within a colour the batched update is
+**bit-identical** to the serial sweep over those same contacts — disjoint bodies
+make the Jacobi update and the Gauss–Seidel sweep agree exactly. Across colours,
+though, the batched path visits contacts in colour order while the serial path
+visits them in build order, and a different visiting order is a different
+re-linearisation, so the two do **not** agree bit-for-bit at a finite sub-step
+count. They converge to the same settled solution, which is why the batched
+kernel is validated by *settling-band* tests — does the pile come to rest in the
+right place? — rather than against the bit-exact golden master that guards the
+scalar path.
 
 ## The A/B switch
 
 The batched kernel is not a rewrite of the solver; it is an alternate
-implementation of the *same* velocity iteration, selected by a flag. The serial
+implementation of the *same* XPBD sub-step, selected by a flag. The serial
 driver reads a module-level toggle:
 
 ```python
@@ -225,13 +232,13 @@ from . import solver
 solver.use_batched_solver = args.batched
 ```
 
-`resolve_pair_list` then routes a contact-mode solve either to the scalar loop or
-to `resolve_batched`, and nothing else in the engine knows which ran. That clean
-seam is deliberate. It means the batched path can be measured head-to-head
-against the scalar one (Chapter 5 does exactly that), and it means the *parallel*
-workers in the next chapters can opt into the same kernel by passing the flag
-explicitly — a worker sub-interpreter cannot see the main interpreter's module
-global, so the parallel path carries the value itself.
+`PhysicsEngine.solve_substep` then routes each sub-step either to the scalar
+`xpbd` solver or to the batched `xpbd_kernel`, and nothing else in the engine
+knows which ran. That clean seam is deliberate. It means the batched path can be
+measured head-to-head against the scalar one (Chapter 5 does exactly that), and
+it means the *parallel* workers in the next chapters can opt into the same kernel
+by passing the flag explicitly — a worker sub-interpreter cannot see the main
+interpreter's module global, so the parallel path carries the value itself.
 
 ## Where we are
 

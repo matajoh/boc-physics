@@ -85,11 +85,12 @@ geometry is re-published only when the body set changes — flagged by the
 ## A note on fidelity
 
 The serial and parallel paths share the solver core but differ in **resolution
-order**, and one known divergence is documented in the code: a seam manifold is
-built *after* each patch has velocity-solved its interior, so the restitution
-target it samples sees an already-damped closing speed. The two paths therefore
-agree at or below the restitution threshold — the resting, stacking regime the
-engine targets — but the decomposed seam suppresses restitution above it. The
-gap is quantified and locked by the seam-decomposition tests rather than hidden.
+order**, and one known divergence is documented in the code: a seam's contacts
+are built *after* each patch has already solved its interior, so the closing
+speed the seam samples for restitution sees an already-damped interior velocity.
+The two paths therefore agree at or below the restitution gate — the resting,
+stacking regime the engine targets — but the decomposed seam suppresses
+restitution above it. The gap is quantified and locked by the seam-decomposition
+tests rather than hidden.
 
 See {doc}`../api/parallel` for the full reference.
