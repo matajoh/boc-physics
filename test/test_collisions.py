@@ -12,8 +12,10 @@ import random
 from bocpy import Matrix
 
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.collisions import (closest_vertex_on_polygon, Collision,
-                                   detect_collision, intersect_circle_circle)
+from bocphysics.collisions import (batched_circle_circle, batched_circle_polygon,
+                                   closest_vertex_on_polygon, Collision,
+                                   detect_collision, intersect_circle_circle,
+                                   intersect_circle_polygon)
 
 COLOR = (180, 90, 90)
 
@@ -158,4 +160,53 @@ def test_batched_sat_matches_reference():
 
             assert collisions_equal(reference, batched)
 
+    assert hits > 0
+
+
+def make_circle(rng):
+    """Build a randomly sized, randomly placed circle."""
+    body = Circle.create(rng.uniform(0.4, 1.3), 1.0, COLOR)
+    return place(body, rng.uniform(-1.6, 1.6), rng.uniform(-1.6, 1.6), 0.0)
+
+
+def make_polygon(rng):
+    """Build a randomly shaped, randomly posed polygon (never a circle)."""
+    body = make_body(rng)
+    while isinstance(body, Circle):
+        body = make_body(rng)
+    return place(body, rng.uniform(-1.6, 1.6), rng.uniform(-1.6, 1.6),
+                 rng.uniform(-math.pi, math.pi))
+
+
+def test_batched_circle_circle_matches_reference():
+    """The batched circle-circle test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260628)
+    pairs = []
+    for _ in range(2000):
+        a = make_circle(rng)
+        b = make_circle(rng)
+        pairs.append((a, b))
+    batched = batched_circle_circle(pairs)
+    hits = 0
+    for (a, b), got in zip(pairs, batched):
+        ref = intersect_circle_circle(a, b)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
+    assert hits > 0
+
+
+def test_batched_circle_polygon_matches_reference():
+    """The batched circle-polygon test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260629)
+    pairs = []
+    for _ in range(2000):
+        pairs.append((make_circle(rng), make_polygon(rng)))
+    batched = batched_circle_polygon(pairs)
+    hits = 0
+    for (c, p), got in zip(pairs, batched):
+        ref = intersect_circle_polygon(c, p)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
     assert hits > 0

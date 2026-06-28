@@ -101,9 +101,9 @@ class Circle:
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the circle's velocity and position over the time step."""
-        self.linear_velocity += gravity * dt
-        self.position += self.linear_velocity * dt
-        self.angle += self.angular_velocity * dt
+        self.linear_velocity = self.linear_velocity + gravity * dt
+        self.position = self.position + self.linear_velocity * dt
+        self.angle = self.angle + self.angular_velocity * dt
         self.update_needed_ = True
 
     def move_to(self, pos: Matrix) -> "Circle":
@@ -114,7 +114,7 @@ class Circle:
 
     def move(self, delta: Matrix) -> "Circle":
         """Move the circle by a relative delta and return it."""
-        self.position += delta
+        self.position = self.position + delta
         self.update_needed_ = True
         return self
 
@@ -207,9 +207,9 @@ class Polygon:
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the polygon's velocity and position over the time step."""
-        self.linear_velocity += gravity * dt
-        self.position += self.linear_velocity * dt
-        self.angle += self.angular_velocity * dt
+        self.linear_velocity = self.linear_velocity + gravity * dt
+        self.position = self.position + self.linear_velocity * dt
+        self.angle = self.angle + self.angular_velocity * dt
         self.update_needed_ = True
 
     def move_to(self, pos: Matrix) -> "Polygon":
@@ -220,7 +220,7 @@ class Polygon:
 
     def move(self, delta: Matrix) -> "Polygon":
         """Move the polygon by a relative delta and return it."""
-        self.position += delta
+        self.position = self.position + delta
         self.update_needed_ = True
         return self
 

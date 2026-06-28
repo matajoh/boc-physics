@@ -21,8 +21,9 @@ from typing import List, NamedTuple, Optional, Set, Tuple
 
 from bocpy import Matrix
 
-from .bodies import RigidBody
-from .collisions import detect_collision
+from .bodies import Circle, RigidBody
+from .collisions import (batched_circle_circle, batched_circle_polygon,
+                         detect_collision)
 from .contacts import find_contact_points
 from .physics import Physics
 from .solver import integrate_block
@@ -66,6 +67,35 @@ def relative_normal_velocity(a: RigidBody, b: RigidBody, r_a: Matrix,
     return (contact_velocity(b, r_b) - contact_velocity(a, r_a)).vecdot(normal)
 
 
+def _batch_circle_collisions(pairs):
+    """Resolve circle-circle and circle-poly pairs in two batched SAT calls.
+
+    Returns a dict mapping each eligible pair's index to its Collision-or-None,
+    in the same orientation detect_collision would yield. Poly-poly pairs are
+    absent so the caller falls back to the per-pair test for them.
+    """
+    cc_idx, cc = [], []
+    cp_idx, cp, cp_flip = [], [], []
+    for i, (a, b) in enumerate(pairs):
+        if isinstance(a, Circle) and isinstance(b, Circle):
+            cc_idx.append(i)
+            cc.append((a, b))
+        elif isinstance(a, Circle):
+            cp_idx.append(i)
+            cp.append((a, b))
+            cp_flip.append(False)
+        elif isinstance(b, Circle):
+            cp_idx.append(i)
+            cp.append((b, a))
+            cp_flip.append(True)
+    out = {}
+    for i, col in zip(cc_idx, batched_circle_circle(cc)) if cc else ():
+        out[i] = col
+    for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp)) if cp else ():
+        out[i] = col.reverse() if (flip and col is not None) else col
+    return out
+
+
 def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
                    contacts: ContactSet = None) -> List[ContactConstraint]:
     """Re-evaluate the narrow phase at the current pose; one constraint per penetrating contact point.
@@ -83,12 +113,11 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
         constraint set is identical to running detect_collision on every pair.
     """
     constraints = []
-    for a, b in pairs:
-        if not (a.physics or b.physics):
-            continue
-        if a.aabb.disjoint(b.aabb):
-            continue
-        collision = detect_collision(a, b)
+    eligible = [(a, b) for a, b in pairs
+                if (a.physics or b.physics) and not a.aabb.disjoint(b.aabb)]
+    resolved = _batch_circle_collisions(eligible)
+    for i, (a, b) in enumerate(eligible):
+        collision = resolved[i] if i in resolved else detect_collision(a, b)
         if collision is None or collision.depth <= 0:
             continue
         normal = collision.normal
@@ -156,10 +185,10 @@ def apply_velocity_impulse(a: RigidBody, b: RigidBody, r_a: Matrix,
                            r_b: Matrix, impulse: Matrix):
     """Apply a velocity impulse at the contact: a gets -impulse, b gets +impulse (mass-weighted)."""
     if a.physics:
-        a.linear_velocity.scaled_add(-a.inv_mass, impulse, in_place=True)
+        a.linear_velocity = a.linear_velocity.scaled_add(-a.inv_mass, impulse)
         a.angular_velocity -= r_a.cross(impulse) * a.inv_inertia
     if b.physics:
-        b.linear_velocity.scaled_add(b.inv_mass, impulse, in_place=True)
+        b.linear_velocity = b.linear_velocity.scaled_add(b.inv_mass, impulse)
         b.angular_velocity += r_b.cross(impulse) * b.inv_inertia
 
 
