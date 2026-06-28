@@ -33,15 +33,8 @@ def intersect_circle_circle(a: Circle, b: Circle) -> Collision:
 
 def closest_vertex_on_polygon(point: Matrix, poly: Polygon) -> Matrix:
     """Find the closest vertex on a polygon to a point."""
-    closest = None
-    dist = float("inf")
-    for v in poly.transformed_vertices:
-        d = (point - v).magnitude_squared()
-        if d < dist:
-            closest = v
-            dist = d
-
-    return closest
+    verts = poly.transformed_vertices
+    return verts[(verts - point).magnitude_squared(axis=1).argmin()]
 
 
 def intersect_circle_polygon(circle: Circle, poly: Polygon) -> Collision:

@@ -123,6 +123,37 @@ Measured (`--target 200 --measure 120`, vs baseline):
 
 ## Task B — vectorise contact-point scan (low risk)
 
+### Status (2026-06-28)
+
+- **Part 1 DONE — `closest_vertex_on_polygon` (no upstream):** replaced the
+  per-vertex Python min loop with
+  `verts[(verts - point).magnitude_squared(axis=1).argmin()]`. Bit-exact:
+  `magnitude_squared` is sign-independent (so `verts - point` matches the old
+  `point - v`), and `argmin` returns the first min like the old strict `<`.
+  Added `test_closest_vertex_matches_reference` (2000-pose fuzz vs an embedded
+  per-vertex oracle). 825 tests pass, flake8 clean. Re-profile (vs post-A):
+  seed7 126.6→124.95 (−1.3%), seed8 126.8→125.15 (−1.3%), seed9 117.4→117.01
+  (−0.3%). Small because this path only fires on circle-vs-polygon pairs and
+  the canonical scene is box-heavy.
+- **Part 2 SUPERSEDED — approximate vectorised fold, folded into Task C:** the
+  `scan_polygon_edges` / `scan_edge_points` fold is sequential (running tol-reset
+  threshold) so it cannot be reduced bit-exactly. Relaxing exactness, it CAN be
+  vectorised approximately — prototyped in `.copilot/proto_contacts.py`:
+  per-vertex `min(axis=0)` over `edge_point_distances`, `concat` both passes,
+  `argmin` for `c0`, masked `argmin` (within `tol` AND `are_different`) for `c1`.
+  Divergence vs the sequential oracle over 13 896 overlapping pairs: manifold
+  SET differs 0 %, cardinality flips 0, ONLY order-only `c0`/`c1` swaps 0.09 %
+  (two equidistant corners on a flat edge — a relabelling, not a different
+  contact). VERDICT: per-pair timing is only 1.04× (a wash) — small polygons
+  (3–6 verts) trade a short Python loop for ~10 Matrix C-calls. So do NOT ship
+  per-pair (it would forfeit bit-exact goldens for ~0 % gain). The win needs
+  batching across pairs, which is Task C. The validated formulation + divergence
+  probe in `.copilot/proto_contacts.py` is the proven building block for C, so
+  C is substantially de-risked: the contact-localisation math and its
+  approximation margin are already characterised.
+- (Upstream scalar-iterator ask is now moot for this path — vectorising the fold
+  supersedes the bulk-extraction need. Logged separately as a generic nicety.)
+
 - Replace the `scan_polygon_edges` / `scan_edge_points` scalar loop with Matrix
   reductions over the (E×P) `edge_point_distances` block: `min` over the block
   for the closest point, `argmin` for the feature index, second-min within `tol`
@@ -138,6 +169,11 @@ Measured (`--target 200 --measure 120`, vs baseline):
 
 ## Task C — batched SAT across pairs (biggest win, more work)
 
+- DE-RISKED: the contact-point localisation half is already prototyped and
+  validated — `.copilot/proto_contacts.py` vectorises `find_contact_points_
+  polygon_polygon` and proves it manifold-set-identical to the sequential oracle
+  (only 0.09 % order-only c0/c1 swaps). C's remaining novelty is the batched SAT
+  and the ragged gather/stack, not the manifold math.
 - Same pattern as the colour-batched solve kernel ("same core, different
   scheduler"). Group candidate pairs by type — poly-poly, circle-poly,
   circle-circle — and run the SAT as stacked Matrix ops over all K pairs of a

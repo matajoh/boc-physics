@@ -115,6 +115,32 @@ def collisions_equal(p, q):
     return p.normal.x == q.normal.x and p.normal.y == q.normal.y and p.depth == q.depth
 
 
+def ref_closest_vertex_on_polygon(point, poly):
+    """Original per-vertex closest-vertex loop, kept as the parity oracle."""
+    closest = None
+    dist = float("inf")
+    for v in poly.transformed_vertices:
+        d = (point - v).magnitude_squared()
+        if d < dist:
+            closest = v
+            dist = d
+
+    return closest
+
+
+def test_closest_vertex_matches_reference():
+    """The argmin closest-vertex search equals the per-vertex loop bit-for-bit."""
+    rng = random.Random(20260628)
+    for _ in range(2000):
+        poly = place(make_body(rng), 0.0, 0.0, rng.uniform(-math.pi, math.pi))
+        while isinstance(poly, Circle):
+            poly = place(make_body(rng), 0.0, 0.0, rng.uniform(-math.pi, math.pi))
+        point = Matrix.vector([rng.uniform(-2.5, 2.5), rng.uniform(-2.5, 2.5)])
+        reference = ref_closest_vertex_on_polygon(point, poly)
+        batched = closest_vertex_on_polygon(point, poly)
+        assert batched.x == reference.x and batched.y == reference.y
+
+
 def test_batched_sat_matches_reference():
     """The batched narrow phase equals the per-axis reference bit-for-bit."""
     rng = random.Random(20260619)
