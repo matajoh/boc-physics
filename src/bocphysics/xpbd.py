@@ -78,10 +78,15 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
         bias velocity is the raw pre-solve normal velocity; restitution is
         applied later in solve_velocities, not folded in here. When contacts is
         not None, the contact points are recorded for the show-contacts overlay.
+        Pairs whose AABBs are disjoint are rejected before the full SAT; the box
+        test is conservative (it never rejects a real overlap), so the emitted
+        constraint set is identical to running detect_collision on every pair.
     """
     constraints = []
     for a, b in pairs:
         if not (a.physics or b.physics):
+            continue
+        if a.aabb.disjoint(b.aabb):
             continue
         collision = detect_collision(a, b)
         if collision is None or collision.depth <= 0:

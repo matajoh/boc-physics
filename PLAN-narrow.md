@@ -112,6 +112,15 @@ Baseline numbers:
 - Batched variant later: precompute all candidate AABBs as blocks and mask
   disjoint pairs in one pass. The scalar reject is the first, trivial step.
 
+### Task A — DONE (2026-06-28, bit-exact)
+
+Added `if a.aabb.disjoint(b.aabb): continue` before `detect_collision` in
+`build_contacts`. All 824 tests pass (goldens prove bit-exact), flake8 clean.
+Measured (`--target 200 --measure 120`, vs baseline):
+- seed 7: 135.8 → 126.6 ms/frame (−6.8%), share 69.5% → 67.3%
+- seed 8: 136.7 → 126.8 ms/frame (−7.2%), share 70.0% → 67.6%
+- seed 9: 124.1 → 117.4 ms/frame (−5.4%), share 68.2% → 66.5%
+
 ## Task B — vectorise contact-point scan (low risk)
 
 - Replace the `scan_polygon_edges` / `scan_edge_points` scalar loop with Matrix
