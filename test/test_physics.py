@@ -7,6 +7,7 @@ from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind
 from bocphysics.contacts import find_contact_points
 from bocphysics.engine import PhysicsEngine
+from bocphysics.transport import GeometryPool
 
 
 def make_engine() -> PhysicsEngine:
@@ -21,9 +22,11 @@ def test_find_contact_points_is_pure_and_takes_overlapping_config():
     floor.move_to(Matrix.vector([0, 10]))
     box.move_to(Matrix.vector([0, 8.5]))
     floor.physics, box.physics = False, True
+    floor.uid, box.uid = 1, 2
     collision = detect_collision(box, floor)
 
-    contact0, _, _, _ = find_contact_points(box, floor, collision)
+    contact0, _, _, _ = find_contact_points(box, floor, collision,
+                                            GeometryPool([box, floor]))
 
     assert abs(contact0.y - 9.5) < 1e-6
     residual = detect_collision(box, floor)

@@ -21,10 +21,11 @@ from typing import List, NamedTuple, Optional, Set, Tuple
 
 from bocpy import Matrix
 
-from .bodies import Circle, RigidBody
+from . import transport
+from .bodies import Circle, Polygon, RigidBody
 from .collisions import (batched_circle_circle, batched_circle_polygon,
-                         detect_collision)
-from .contacts import find_contact_points
+                         batched_polygon_polygon, detect_collision)
+from .contacts import batched_contact_points, find_contact_points
 from .physics import Physics
 from .solver import integrate_block
 
@@ -32,6 +33,9 @@ ContactSet = Optional[Set[Tuple[float, float]]]
 
 # Effective-mass and tangent-speed floor below which a contact contributes no impulse.
 EPS = 1e-9
+
+# A static body's material points are at rest; share one zero to avoid a per-call alloc.
+_ZERO_VELOCITY = Matrix.vector([0.0, 0.0])
 
 
 class ContactConstraint(NamedTuple):
@@ -57,7 +61,7 @@ def generalized_inverse_mass(body: RigidBody, r: Matrix, direction: Matrix) -> f
 def contact_velocity(body: RigidBody, r: Matrix) -> Matrix:
     """World velocity of the material point at anchor r: v + omega x r, zero for a static body."""
     if not body.physics:
-        return Matrix.vector([0, 0])
+        return _ZERO_VELOCITY
     return body.linear_velocity + body.angular_velocity * r.perpendicular()
 
 
@@ -67,15 +71,16 @@ def relative_normal_velocity(a: RigidBody, b: RigidBody, r_a: Matrix,
     return (contact_velocity(b, r_b) - contact_velocity(a, r_a)).vecdot(normal)
 
 
-def _batch_circle_collisions(pairs):
+def _batch_circle_collisions(pairs, geom):
     """Resolve circle-circle and circle-poly pairs in two batched SAT calls.
 
     Returns a dict mapping each eligible pair's index to its Collision-or-None,
-    in the same orientation detect_collision would yield. Poly-poly pairs are
-    absent so the caller falls back to the per-pair test for them.
+    in the same orientation detect_collision would yield. geom is the shared
+    GeometryPool over every eligible polygon, reused by both batched SAT calls.
     """
     cc_idx, cc = [], []
     cp_idx, cp, cp_flip = [], [], []
+    pp_idx, pp = [], []
     for i, (a, b) in enumerate(pairs):
         if isinstance(a, Circle) and isinstance(b, Circle):
             cc_idx.append(i)
@@ -88,11 +93,18 @@ def _batch_circle_collisions(pairs):
             cp_idx.append(i)
             cp.append((b, a))
             cp_flip.append(True)
+        else:
+            pp_idx.append(i)
+            pp.append((a, b))
     out = {}
     for i, col in zip(cc_idx, batched_circle_circle(cc)) if cc else ():
         out[i] = col
-    for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp)) if cp else ():
-        out[i] = col.reverse() if (flip and col is not None) else col
+    if cp:
+        for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp, geom)):
+            out[i] = col.reverse() if (flip and col is not None) else col
+    if pp:
+        for i, col in zip(pp_idx, batched_polygon_polygon(pp, geom)):
+            out[i] = col
     return out
 
 
@@ -115,22 +127,39 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
     constraints = []
     eligible = [(a, b) for a, b in pairs
                 if (a.physics or b.physics) and not a.aabb.disjoint(b.aabb)]
-    resolved = _batch_circle_collisions(eligible)
+    polys = list({p.uid: p for a, b in eligible for p in (a, b)
+                  if isinstance(p, Polygon)}.values())
+    geom = transport.GeometryPool(polys)
+    resolved = _batch_circle_collisions(eligible, geom)
+    hits = []
+    pp_pairs = []
     for i, (a, b) in enumerate(eligible):
         collision = resolved[i] if i in resolved else detect_collision(a, b)
         if collision is None or collision.depth <= 0:
             continue
+        grid_k = None
+        if isinstance(a, Polygon) and isinstance(b, Polygon):
+            grid_k = len(pp_pairs)
+            pp_pairs.append((a, b))
+        hits.append((a, b, collision, grid_k))
+    manifolds = batched_contact_points(geom, pp_pairs) if pp_pairs else None
+    for a, b, collision, grid_k in hits:
         normal = collision.normal
-        c0, c1, _id0, _id1 = find_contact_points(a, b, collision)
-        if contacts is not None:
-            contacts.add((c0.x, c0.y))
-            if c1 is not None:
-                contacts.add((c1.x, c1.y))
-        for point in (c0, c1):
-            if point is None:
-                continue
-            r_a = point - a.position
-            r_b = point - b.position
+        if grid_k is not None:
+            # Packed row: count, then stride-6 blocks [px, py, ra_x, ra_y, rb_x, rb_y] per point.
+            k = grid_k
+            points = []
+            for i in range(int(manifolds[k, 0])):
+                o = 1 + 6 * i
+                points.append((manifolds[k, o], manifolds[k, o + 1],
+                               manifolds[k, o + 2:o + 4], manifolds[k, o + 4:o + 6]))
+        else:
+            c0, c1, _id0, _id1 = find_contact_points(a, b, collision, geom)
+            points = [(c.x, c.y, c - a.position, c - b.position)
+                      for c in (c0, c1) if c is not None]
+        for px, py, r_a, r_b in points:
+            if contacts is not None:
+                contacts.add((px, py))
             bias_velocity = relative_normal_velocity(a, b, r_a, r_b, normal)
             constraints.append(ContactConstraint(a, b, normal, r_a, r_b, collision.depth, bias_velocity))
     return constraints

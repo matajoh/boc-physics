@@ -19,6 +19,10 @@ from .quadtree import QuadTree
 from .render import (Camera, draw_box_overlay, draw_frame, draw_slab_fills,
                      draw_static_layer)
 from .scene import DEFAULT_SCENE, Scene
+from .spawn import SpawnQueue
+
+# Cap the physics step so a slow render or startup frame cannot blow up the explicit integrator.
+MAX_PHYSICS_DT = 1 / 50
 
 
 def _fit_resolution(resolution: Resolution, view_aspect: float) -> Resolution:
@@ -73,7 +77,7 @@ class Simulation(pyglet.window.Window):
         self.parallel = parallel
         self.stepper = None
         self.in_flight = 0
-        self.pending_spawns = []
+        self.spawn_queue = SpawnQueue()
         if self.parallel:
             self.stepper = ParallelStepper(self.engine)
             self.stepper.begin(worker_count=workers)
@@ -177,17 +181,19 @@ class Simulation(pyglet.window.Window):
                 self.spawn_body(polygon.move_to(pos))
 
     def spawn_body(self, body):
-        """Add a body now (serial) or queue it for the next frame boundary (parallel).
+        """Queue a runtime-spawned body for admission once it fits without overlap.
 
         Description:
-            In the parallel path a frame may be in flight on the workers, which
-            read the body set, so a spawn cannot mutate it mid-frame. The body is
-            queued and applied once the pipeline is idle, which also bumps the
-            geometry version so the next step re-seeds it.
+            A click or generator can drop a body straight onto the pile; entering
+            the world at a deep overlap makes the solver fling it out. The queue
+            holds it until a frame where it fits, or discards it after a budget of
+            tries, keeping spawn admission entirely outside the physics step.
         """
-        if self.parallel:
-            self.pending_spawns.append(body)
-        else:
+        self.spawn_queue.enqueue(body)
+
+    def admit_spawns(self):
+        """Add every queued spawn that now fits without significant overlap."""
+        for body in self.spawn_queue.process(self.engine.bodies):
             self.engine.add_body(body)
 
     def on_close(self):
@@ -208,9 +214,11 @@ class Simulation(pyglet.window.Window):
             return
 
         if not self.paused:
-            self.tick_generators(dt)
+            step_dt = min(dt, MAX_PHYSICS_DT)
+            self.tick_generators(step_dt)
+            self.admit_spawns()
             start = time.perf_counter()
-            self.engine.step(dt)
+            self.engine.step(step_dt)
             self.physics_elapsed += time.perf_counter() - start
             self.frame_count += 1
 
@@ -254,19 +262,12 @@ class Simulation(pyglet.window.Window):
         self.in_flight -= pump().executed
         if self.in_flight <= 0 and not self.paused:
             self.tick_generators(dt)
-            self.apply_pending_spawns()
+            self.admit_spawns()
             if self.stepper.step():
                 self.in_flight += 1
                 self.frame_count += 1
 
         self.refresh_stats(dt)
-
-    def apply_pending_spawns(self):
-        """Add any click-spawned bodies now that the parallel pipeline is idle."""
-        for body in self.pending_spawns:
-            self.engine.add_body(body)
-
-        self.pending_spawns.clear()
 
     def run(self):
         """Schedule the update tick and enter the pyglet event loop."""
@@ -276,8 +277,8 @@ class Simulation(pyglet.window.Window):
     def step_once(self, dt):
         """Advance the physics one frame, draining the parallel pipeline if running."""
         self.tick_generators(dt)
+        self.admit_spawns()
         if self.parallel:
-            self.apply_pending_spawns()
             if self.stepper.step():
                 quiesce(30.0)
         else:

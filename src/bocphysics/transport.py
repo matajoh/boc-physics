@@ -11,11 +11,12 @@ Description:
     the packed layout readable; never reorder them without updating WIDTH.
 """
 
+import math
 from typing import List, Optional, Tuple
 
 from bocpy import Matrix
 
-from .bodies import RigidBody
+from .bodies import Polygon, RigidBody
 
 UID = 0
 POSITION = slice(1, 3)
@@ -100,3 +101,129 @@ def unpack_pairs(block: Optional[Matrix]) -> List[Tuple[int, int]]:
     if block is None:
         return []
     return [(int(block[i, 0]), int(block[i, 1])) for i in range(block.rows)]
+
+
+class State:
+    """Authoritative (N x 7) pool for one body set; bodies become views into it.
+
+    Description:
+        Owns one persistent block and a uid->row map rebuilt only when the body
+        set changes. gather seeds the pool from scalar bodies; scatter writes it
+        back. The block is the same column layout pack_state uses, so it crosses
+        a cown by pointer. Statics are excluded -- they never integrate.
+    """
+
+    def __init__(self, bodies: List[RigidBody]):
+        """Build the pool and row map from the dynamic bodies in order."""
+        self.rebuild(bodies)
+
+    def rebuild(self, bodies: List[RigidBody]):
+        """Reseed pool and row_of after a body-set change; statics excluded."""
+        self.bodies = [b for b in bodies if b.physics]
+        self.row_of = {b.uid: i for i, b in enumerate(self.bodies)}
+        self.block = pack_state(self.bodies) if self.bodies else None
+
+    def gather(self):
+        """Write every body's mutable state into the pool block."""
+        store_state(self.bodies, self.block)
+
+    def scatter(self):
+        """Read the pool block back onto the bodies."""
+        apply_state(self.bodies, self.block)
+
+
+class GeometryPool:
+    """Patch-wide transformed polygon geometry as padded SoA rows.
+
+    Description:
+        One row per polygon, statics included; circles have no geometry and are
+        absent. Local vertices/normals are stored padded once at rebuild; sync
+        rotates+translates the whole base block in place -- one batched column
+        rotation, no per-poly Python loop -- so geom_x/geom_y/norm_x/norm_y hold
+        the current world pose. The contact batchers read rows by uid via take.
+    """
+
+    def __init__(self, bodies: List[RigidBody]):
+        """Build the geometry rows and uid->row map from the polygons."""
+        self.rebuild(bodies)
+
+    def rebuild(self, bodies: List[RigidBody]):
+        """Reseed padded base rows and row_of after a body-set change; sync once."""
+        self.polys = [b for b in bodies if isinstance(b, Polygon)]
+        self.row_of = {b.uid: i for i, b in enumerate(self.polys)}
+        self.vcount = {}
+        if not self.polys:
+            self.vmax = self.nmax = 0
+            self.geom_x = self.geom_y = self.norm_x = self.norm_y = None
+            return
+
+        vmax = max(len(p.vertices) for p in self.polys)
+        nmax = max(len(p.normals) for p in self.polys)
+        self.vmax = vmax
+        self.nmax = nmax
+        rows = len(self.polys)
+        vx = [0] * rows * vmax
+        vy = [0] * rows * vmax
+        nx = [0] * rows * nmax
+        ny = [0] * rows * nmax
+        vscan = 0
+        nscan = 0
+        for p in self.polys:
+            self.vcount[p.uid] = len(p.vertices)
+            for i, v in enumerate(p.vertices):
+                vx[vscan + i] = v.x
+                vy[vscan + i] = v.y
+            for i in range(len(p.vertices), vmax):
+                vx[vscan + i] = p.vertices[0].x
+                vy[vscan + i] = p.vertices[0].y
+
+            for i, n in enumerate(p.normals):
+                nx[nscan + i] = n.x
+                ny[nscan + i] = n.y
+
+            vscan += vmax
+            nscan += nmax
+
+        self.base_vx = Matrix(rows, vmax, vx)
+        self.base_vy = Matrix(rows, vmax, vy)
+        self.base_nx = Matrix(rows, nmax, nx)
+        self.base_ny = Matrix(rows, nmax, ny)
+        self.px = [0] * rows
+        self.py = [0] * rows
+        self.cos = [0] * rows
+        self.sin = [0] * rows
+        self.sync()
+
+    def sync(self):
+        """Rotate+translate the base block into world pose, one batched pass."""
+        rows = len(self.polys)
+        for i, p in enumerate(self.polys):
+            self.cos[i] = math.cos(p.angle)
+            self.sin[i] = math.sin(p.angle)
+            self.px[i] = p.position.x
+            self.py[i] = p.position.y
+
+        cos = Matrix(rows, 1, self.cos)
+        sin = Matrix(rows, 1, self.sin)
+        px = Matrix(rows, 1, self.px)
+        py = Matrix(rows, 1, self.py)
+
+        self.geom_x = self.base_vx * cos
+        self.geom_x -= self.base_vy * sin
+        self.geom_x += px
+
+        self.geom_y = self.base_vx * sin
+        self.geom_y += self.base_vy * cos
+        self.geom_y += py
+
+        self.norm_x = self.base_nx * cos
+        self.norm_x -= self.base_ny * sin
+
+        self.norm_y = self.base_nx * sin
+        self.norm_y += self.base_ny * cos
+
+    def world_vertices(self, uid) -> Matrix:
+        """Return one polygon's transformed vertices as a real-count (nv x 2) block."""
+        r = self.row_of[uid]
+        nv = self.vcount[uid]
+        return Matrix.concat([self.geom_x[r, :nv].T, self.geom_y[r, :nv].T], 1)

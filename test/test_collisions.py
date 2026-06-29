@@ -11,11 +11,14 @@ import random
 
 from bocpy import Matrix
 
+from bocphysics import transport
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import (batched_circle_circle, batched_circle_polygon,
+                                   batched_polygon_polygon,
                                    closest_vertex_on_polygon, Collision,
                                    detect_collision, intersect_circle_circle,
-                                   intersect_circle_polygon)
+                                   intersect_circle_polygon,
+                                   intersect_polygon_polygon)
 
 COLOR = (180, 90, 90)
 
@@ -202,10 +205,33 @@ def test_batched_circle_polygon_matches_reference():
     pairs = []
     for _ in range(2000):
         pairs.append((make_circle(rng), make_polygon(rng)))
-    batched = batched_circle_polygon(pairs)
+    for i, (_c, p) in enumerate(pairs):
+        p.uid = i
+    geom = transport.GeometryPool([p for _, p in pairs])
+    batched = batched_circle_polygon(pairs, geom)
     hits = 0
     for (c, p), got in zip(pairs, batched):
         ref = intersect_circle_polygon(c, p)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
+    assert hits > 0
+
+
+def test_batched_polygon_polygon_matches_reference():
+    """The batched polygon-polygon test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260630)
+    pairs = []
+    for _ in range(2000):
+        pairs.append((make_polygon(rng), make_polygon(rng)))
+    polys = [p for pair in pairs for p in pair]
+    for i, p in enumerate(polys):
+        p.uid = i
+    geom = transport.GeometryPool(polys)
+    batched = batched_polygon_polygon(pairs, geom)
+    hits = 0
+    for (a, b), got in zip(pairs, batched):
+        ref = intersect_polygon_polygon(a, b)
         if ref is not None:
             hits += 1
         assert collisions_equal(ref, got)

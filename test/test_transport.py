@@ -88,3 +88,79 @@ def test_pack_state_block_shape():
         body.uid = i
     block = transport.pack_state(bodies)
     assert (block.rows, block.columns) == (5, transport.WIDTH)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_state_gather_scatter_round_trip(seed):
+    """State.scatter must restore exactly what gather wrote, statics excluded."""
+    rng = random.Random(seed)
+    count = rng.randint(1, 12)
+    states = random_states(rng, count)
+    bodies = [build_body(s) for s in states]
+    for i, body in enumerate(bodies):
+        body.uid = i
+
+    state = transport.State(bodies)
+    assert state.row_of == {body.uid: i for i, body in enumerate(bodies)}
+
+    for body in bodies:
+        body.move(Matrix.vector([5.0, -2.0]))
+        body.angular_velocity = 11.0
+
+    state.scatter()
+
+    for body, src in zip(bodies, states):
+        (_, x, y, ang, vx, vy, spin, *_rest) = src
+        assert body.position.x == x
+        assert body.angular_velocity == spin
+
+
+def test_state_excludes_statics():
+    """Static bodies stay out of the pool; only dynamics get rows."""
+    rng = random.Random(0)
+    bodies = [build_body(s) for s in random_states(rng, 4)]
+    for i, body in enumerate(bodies):
+        body.uid = i
+    bodies[1].physics = False
+    state = transport.State(bodies)
+    assert state.block.rows == 3
+    assert 1 not in state.row_of
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_geometry_pool_rows_match_transformed_geometry(seed):
+    """Each pool row reproduces its polygon's transformed verts/normals exactly."""
+    rng = random.Random(seed)
+    bodies = [build_body(s) for s in random_states(rng, rng.randint(2, 10))]
+    for i, body in enumerate(bodies):
+        body.uid = i
+    polys = [b for b in bodies if isinstance(b, Polygon)]
+    if not polys:
+        pytest.skip("no polygons in this draw")
+
+    pool = transport.GeometryPool(bodies)
+    assert pool.geom_x.rows == len(polys)
+    assert set(pool.row_of) == {p.uid for p in polys}
+
+    for poly in polys:
+        r = pool.row_of[poly.uid]
+        pv = poly.transformed_vertices
+        pn = poly.transformed_normals
+        for v in range(pv.rows):
+            assert pool.geom_x[r, v] == pv[v, 0]
+            assert pool.geom_y[r, v] == pv[v, 1]
+        for j in range(pn.rows):
+            assert pool.norm_x[r, j] == pn[j, 0]
+            assert pool.norm_y[r, j] == pn[j, 1]
+
+
+def test_geometry_pool_excludes_circles():
+    """Circles have no geometry, so they never get a pool row."""
+    rng = random.Random(0)
+    bodies = [build_body(s) for s in random_states(rng, 8)]
+    for i, body in enumerate(bodies):
+        body.uid = i
+    bodies[0] = Circle.create(1.0, 2.0, (10, 10, 10))
+    bodies[0].uid = 0
+    pool = transport.GeometryPool(bodies)
+    assert bodies[0].uid not in pool.row_of

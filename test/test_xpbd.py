@@ -201,6 +201,8 @@ def run_drop(frames=180):
     box.linear_velocity = Matrix.vector([0, 0])
     box.angular_velocity = 0.0
     pairs = [(box, floor)]
+    for uid, body in enumerate([floor, box]):
+        body.uid = uid
     for _ in range(frames):
         xpbd.solve_group_substep(INELASTIC, [box], pairs, GRAVITY, SUB_DT, 4)
     return box, floor
@@ -269,6 +271,8 @@ def test_random_pile_stays_finite_and_bounded(seed):
 
     pairs = [(boxes[i], boxes[j]) for i in range(len(boxes)) for j in range(i + 1, len(boxes))]
     pairs += [(box, floor) for box in boxes]
+    for uid, body in enumerate([floor] + boxes):
+        body.uid = uid
     for _ in range(180):
         xpbd.solve_group_substep(FRICTION, boxes, pairs, GRAVITY, SUB_DT, 4)
 

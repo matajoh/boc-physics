@@ -29,28 +29,40 @@ alongside ms/frame — not just FPS.
 1. Record pytest (827), flake8 src test bench, drop_box seeds 7/8/9, profile_narrow
    ms/frame + build_contacts% + transport breakdown. Note pre-existing failures.
 
-## Phase 1 — seam refactor (modest serial saving)
-2. transport.py: gather_into/scatter_from lifting pack/store/apply, same op order.
-3. solver.py: integrate_block mutates pose/vel slices in place; saving = one pose
-   round trip/substep (velocity gather is dead work — derive_velocities overwrites).
-4. Gate: bit-exact, flake8, parity fuzz, profile seeds 7/8/9; (0,7) sentinel.
+## Phase 1 — SKIPPED (seam already factored)
+2. transport pack_state/store_state/apply_state already ARE the gather/scatter
+   seam; integrate_block already gathers->3 ops->scatters. No measurable win; the
+   setter rewrite (~6 in-place sites, bit-exact) was done instead as Phase 2 prep.
 
-## Phase 2 — bodies-as-views via named State (the real win)
-5. Write-through audit (blocker): move/rotate_to/scaled_add(in_place=True) need
-   pool-aliasing views or setter rewrite; fuzz test in-place vel observed in pool.
-6. Introduce State owning (N,7) pool, slices, canonical row_of.
-7. View properties; setters write pool only (shadow-assert ladder if rewriting).
-   ~9 call sites unchanged; position.x=5 trap test; gate goldens + fuzz.
+## Phases 2+3 ARE ONE MOVE — geometry into State, both batchers read pool
+Geometry pool is NOT a standalone GeometryPool; it is geom_x/geom_y/norm_x/norm_y
+rows ON State, alongside the (N,7) dynamics. The 7% circle-poly assembly win is
+incidental. The POINT: build_contacts still reads body.transformed_vertices_block_
+(per-body), which pins bodies authoritative and forces scatter mid-frame. Move
+transformed geometry into State rows -> both circle-poly AND poly-poly contact
+gen read take(idx) from the pool -> per-body position/geom reads vanish -> pool
+stays authoritative -> gather once/scatter once. Poly-poly CANNOT be skipped: its
+scan_polygon_edges/edge_point_distances reads are exactly what pin bodies.
+Profile (seed7): circle-poly self 1.3s, poly-poly contact gen ~4.5s. Statics
+transform once at rebuild; only dynamics rewrite rows per frame.
+
+## Phase 3 (NOW) — Geometry pool ON State
+9. DONE: transport.GeometryPool (polys+statics, circles excluded; vmax/nmax pad,
+   replicate vertex0/zero normals; row_of; sync rewrites rows). 889 pass, flake8 ok.
+10. DONE: circle-poly reads geom_x/geom_y/norm_x/norm_y .take(rows,0); vertex0/zero
+    pad bit-exact; scalar broadcast (_BIG, sign). 2.19s->0.65s cumtime, 113ms/frame.
+10b. DONE: poly-poly batched via pool (both bodies' rows); intersect_polygon_polygon
+    1.77s->0, build_contacts 11.3s->9.2s, 106ms/frame. Next wall: contacts.py gen ~4s.
+11. Cleanup + editor-lens; refresh docstrings + README bench stats; flake8 rc=0.
+
+## Phase 2 (AFTER 3) — pool-authoritative substep loop (cut 9 boundaries to 1/frame)
+Kernels already SoA. With geom in State, NO per-body reads remain; persist pool
+across substeps, gather once/frame, scatter once. Bodies stale mid-frame OK.
+Bit-exact gate, build on State scaffold.
 
 ## Phase 2.5 — Worker shells (profile-gated)
 8. Workers hold patch-local block, not global pool; per-patch rows. If shells
    dominate: alias patch row; else synced scalars. Measure churn (remove_outside).
-
-## Phase 3 — Geometry pool (last)
-9. geom_x/geom_y (N,Vmax) + norm_x/norm_y (N,Nmax); update_transform writes a row.
-10. collisions circle-poly: geom_x.take(idx,0)/geom_y.take(idx,0) -> two (K,Vmax),
-    no deinterleave; pad by replicating last vertex; parity fuzz bit-exact.
-11. Cleanup + editor-lens; refresh docstrings + README bench stats; flake8 rc=0.
 
 ## Risks
 - Op reorder drift -> identical C op sequence + goldens/fuzz per step.
