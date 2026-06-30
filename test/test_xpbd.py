@@ -6,7 +6,7 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics import xpbd
+from bocphysics import transport, xpbd
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.physics import Physics
@@ -280,3 +280,30 @@ def test_random_pile_stays_finite_and_bounded(seed):
         assert math.isfinite(box.position.x) and math.isfinite(box.position.y)
         assert math.isfinite(box.angle)
         assert box.position.y < 13.0
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_broad_box_never_rejects_a_real_overlap(seed):
+    """The bounding-circle broad-phase cull keeps every pair that actually collides."""
+    rng = random.Random(seed)
+
+    def build():
+        """Build a random circle or rectangle placed near the origin."""
+        if rng.random() < 0.5:
+            body = Circle.create(rng.uniform(0.6, 1.4), 2.0, (200, 100, 50))
+        else:
+            body = Polygon.create_rectangle(rng.uniform(1.0, 2.4),
+                                            rng.uniform(1.0, 2.4), 2.0, (50, 120, 200))
+        body.physics = True
+        body.move_to(Matrix.vector([rng.uniform(-2, 2), rng.uniform(-2, 2)]))
+        body.rotate_to(rng.uniform(0, 6.28))
+        return body
+
+    a, b = build(), build()
+    a.uid, b.uid = 0, 1
+    state = transport.State([a, b])
+    box_a = xpbd._broad_box(a, state)
+    box_b = xpbd._broad_box(b, state)
+    collision = detect_collision(a, b)
+    if collision is not None and collision.depth > 0:
+        assert not box_a.disjoint(box_b)

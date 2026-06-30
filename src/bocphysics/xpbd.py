@@ -22,7 +22,7 @@ from typing import List, NamedTuple, Optional, Set, Tuple
 from bocpy import Matrix
 
 from . import transport
-from .bodies import Circle, Polygon, RigidBody
+from .bodies import AABB, Circle, Polygon, RigidBody
 from .collisions import (batched_circle_circle, batched_circle_polygon,
                          batched_polygon_polygon, detect_collision)
 from .contacts import batched_contact_points, find_contact_points
@@ -63,6 +63,28 @@ def contact_velocity(body: RigidBody, r: Matrix) -> Matrix:
     if not body.physics:
         return _ZERO_VELOCITY
     return body.linear_velocity + body.angular_velocity * r.perpendicular()
+
+
+def _broad_box(body: RigidBody, state: Optional["transport.State"]) -> AABB:
+    """Conservative bounding-circle AABB; dynamic pose from the block, static pose from the body.
+
+    Description:
+        The broad-phase cull only needs a box that never shrinks below the true
+        bounds, so the rotation-invariant bounding circle (centre +/- radius)
+        suffices and needs no angle. A dynamic body reads its centre from the
+        State block so build_contacts touches no dynamic body pose; a static body
+        never integrates, so its scalar centre is always valid. The looser box
+        only widens the cull -- it never rejects a real overlap -- so the emitted
+        constraint set and its order are unchanged.
+    """
+    row = state.row_of.get(body.uid) if state is not None and body.physics else None
+    if row is not None:
+        x = state.block[row, transport.POSITION.start]
+        y = state.block[row, transport.POSITION.start + 1]
+    else:
+        x, y = body.position.x, body.position.y
+    rad = body.radius
+    return AABB(x - rad, y - rad, x + rad, y + rad)
 
 
 def relative_normal_velocity(a: RigidBody, b: RigidBody, r_a: Matrix,
@@ -128,8 +150,11 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
         equal the scalar bodies before any reader trusts it.
     """
     constraints = []
-    eligible = [(a, b) for a, b in pairs
-                if (a.physics or b.physics) and not a.aabb.disjoint(b.aabb)]
+    candidates = [(a, b) for a, b in pairs if a.physics or b.physics]
+    unique = {id(p): p for a, b in candidates for p in (a, b)}
+    boxes = {bid: _broad_box(body, state) for bid, body in unique.items()}
+    eligible = [(a, b) for a, b in candidates
+                if not boxes[id(a)].disjoint(boxes[id(b)])]
     if state is not None:
         transport.assert_block_mirrors(state.block, state.row_of,
                                        [body for pair in eligible for body in pair])

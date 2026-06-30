@@ -173,14 +173,30 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
          block-sourced) and cand (core, body-sourced) groups real uids turned those
          two tests into a genuine block-vs-body cross-check that now passes bit-exact.
          990 pass, golden bit-exact, flake8 clean.
-    B3c. Broad-phase AABB off the pool/block, not a.aabb. Build a per-frame aabb
-         table: polys = min/max over pool geom_x/geom_y real-count rows; circles =
-         pose_of(uid) +/- radius. Replace `a.aabb.disjoint(b.aabb)` with the table.
-         RISK: must be bit-IDENTICAL to body aabb so the eligible set is unchanged
-         (same float bounds -> same disjoint booleans); verify min/max op order
-         matches bodies.py. GATE: golden bit-exact + a fuzz asserting eligible set
-         equality vs the old aabb path.
+    B3c. DONE. Broad-phase cull off the block, not a.aabb. Chose a conservative
+         bounding-circle box over the planned tight pool-aabb table: `_broad_box`
+         returns AABB(centre +/- body.radius) with the dynamic centre read from
+         state.block[row] (keyed by uid via state.row_of) and the static centre
+         read from the immutable body.position (statics never integrate). The box
+         is rotation-invariant so it needs no angle. Replaced
+         `a.aabb.disjoint(b.aabb)` with id()-keyed `_broad_box` boxes over the
+         physics-bearing candidate set (id() dodges the uid=None landmine for
+         state=None micro-tests). Why bit-exact despite a LOOSER box: the cull is
+         perf-only -- it changes neither the constraint SET nor ORDER, because (a)
+         a colliding pair (depth>0) always passes any conservative cull (the
+         bounding circle provably contains the polygon, so overlapping bodies
+         always have overlapping boxes), (b) extra non-colliding pairs that slip
+         through return None from SAT and are skipped, (c) `eligible` preserves
+         `pairs` order so colliding-pair relative order is invariant. Verified
+         nothing downstream needs a.aabb's update_transform side effect: the geom
+         pool builds its own world vertices from the block, find_contact_points
+         reads pose+geom, and the detect_collision fallback is dead code. Added 60
+         conservativeness fuzz tests (test_broad_box_never_rejects_a_real_overlap):
+         random near-origin circle/rect pairs assert `not box_a.disjoint(box_b)`
+         whenever detect_collision finds depth>0. 1050 pass / 1 skip, golden
+         bit-exact, flake8 clean, drop_box bench ~2.5 ms/frame (no regression).
     B3d. Circle SAT pose from the block. batched_circle_circle /
+
          batched_circle_polygon (and the intersect_* they wrap) take circle pose
          from pose_of(uid) instead of a.position.x/.y; radius stays a body constant.
          GATE: golden bit-exact + settling.
@@ -193,7 +209,8 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
 
     OPEN for B3: confirm dynamic-circle rows resolve in state.row_of (circles carry
     pose in block cols 1,2 but have NO geometry row — they must still get a State
-    row); decide static-circle pose-table ownership (frame-level vs GeometryPool).
+    row). Static-circle pose ownership RESOLVED in B3c: read the immutable static
+    body.position directly (valid forever -- statics never integrate), no table.
 
 B4. Row-index the constraints; solver writes the pool.
     ContactConstraint carries pool row indices (idx_a, idx_b) alongside the body
