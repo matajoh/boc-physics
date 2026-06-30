@@ -5,6 +5,7 @@ from typing import NamedTuple
 
 from bocpy import Matrix
 
+from . import transport
 from .bodies import Circle, Polygon, RigidBody
 
 _MAX_VERTS = 8          # widest polygon in the scene; pads the batched vertex stack
@@ -85,13 +86,25 @@ def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
     return Collision(axis, depth.min())
 
 
-def batched_circle_circle(pairs):
+def _circle_center(circle, state):
+    """Circle centre (x, y): dynamic from the State block by uid, static from the body."""
+    if state is not None and circle.physics:
+        row = state.row_of.get(circle.uid)
+        if row is not None:
+            return (state.block[row, transport.POSITION.start],
+                    state.block[row, transport.POSITION.start + 1])
+    return circle.position.x, circle.position.y
+
+
+def batched_circle_circle(pairs, state=None):
     """Resolve K circle-circle pairs at once; return one Collision-or-None per pair."""
     k = len(pairs)
     dx, dy, rsum = [0] * k, [0] * k, [0] * k
     for i, (a, b) in enumerate(pairs):
-        dx[i] = b.position.x - a.position.x
-        dy[i] = b.position.y - a.position.y
+        ax, ay = _circle_center(a, state)
+        bx, by = _circle_center(b, state)
+        dx[i] = bx - ax
+        dy[i] = by - ay
         rsum[i] = (a.radius + b.radius) * 0.97
     dx = Matrix(k, 1, dx)
     dy = Matrix(k, 1, dy)
@@ -113,7 +126,7 @@ def batched_circle_circle(pairs):
     return out
 
 
-def batched_circle_polygon(pairs, geom):
+def batched_circle_polygon(pairs, geom, state=None):
     """Resolve K (circle, polygon) pairs at once; return one Collision-or-None per pair.
 
     geom is the patch GeometryPool: poly verts/normals are read as whole rows by
@@ -131,8 +144,7 @@ def batched_circle_polygon(pairs, geom):
     dpy = [0] * k
     valid = Matrix.zeros((k, acap))
     for i, (c, p) in enumerate(pairs):
-        cx[i] = c.position.x
-        cy[i] = c.position.y
+        cx[i], cy[i] = _circle_center(c, state)
         rad[i] = c.radius * 0.97
         dpx[i] = p.position.x - cx[i]
         dpy[i] = p.position.y - cy[i]

@@ -218,6 +218,43 @@ def test_batched_circle_polygon_matches_reference():
     assert hits > 0
 
 
+def test_batched_circle_circle_block_pose_matches_body_pose():
+    """Sourcing both circle centres from the State block equals body-sourced, bit-for-bit."""
+    rng = random.Random(20260701)
+    pairs = []
+    bodies = []
+    for k in range(2000):
+        a, b = make_circle(rng), make_circle(rng)
+        a.physics = b.physics = True
+        a.uid, b.uid = 2 * k, 2 * k + 1
+        pairs.append((a, b))
+        bodies.extend((a, b))
+    state = transport.State(bodies)
+    body_sourced = batched_circle_circle(pairs)
+    block_sourced = batched_circle_circle(pairs, state)
+    for ref, got in zip(body_sourced, block_sourced):
+        assert collisions_equal(ref, got)
+
+
+def test_batched_circle_polygon_block_pose_matches_body_pose():
+    """Sourcing the circle centre from the State block equals body-sourced, bit-for-bit."""
+    rng = random.Random(20260702)
+    pairs = []
+    circles = []
+    for k in range(2000):
+        c, p = make_circle(rng), make_polygon(rng)
+        c.physics = True
+        c.uid, p.uid = 2 * k, 2 * k + 1
+        pairs.append((c, p))
+        circles.append(c)
+    geom = transport.GeometryPool([p for _, p in pairs])
+    state = transport.State(circles)
+    body_sourced = batched_circle_polygon(pairs, geom)
+    block_sourced = batched_circle_polygon(pairs, geom, state)
+    for ref, got in zip(body_sourced, block_sourced):
+        assert collisions_equal(ref, got)
+
+
 def test_batched_polygon_polygon_matches_reference():
     """The batched polygon-polygon test equals the per-pair oracle bit-for-bit."""
     rng = random.Random(20260630)

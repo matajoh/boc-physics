@@ -93,12 +93,13 @@ def relative_normal_velocity(a: RigidBody, b: RigidBody, r_a: Matrix,
     return (contact_velocity(b, r_b) - contact_velocity(a, r_a)).vecdot(normal)
 
 
-def _batch_circle_collisions(pairs, geom):
+def _batch_circle_collisions(pairs, geom, state=None):
     """Resolve circle-circle and circle-poly pairs in two batched SAT calls.
 
     Returns a dict mapping each eligible pair's index to its Collision-or-None,
     in the same orientation detect_collision would yield. geom is the shared
     GeometryPool over every eligible polygon, reused by both batched SAT calls.
+    When state is given, circle centres are sourced from the State block.
     """
     cc_idx, cc = [], []
     cp_idx, cp, cp_flip = [], [], []
@@ -119,10 +120,10 @@ def _batch_circle_collisions(pairs, geom):
             pp_idx.append(i)
             pp.append((a, b))
     out = {}
-    for i, col in zip(cc_idx, batched_circle_circle(cc)) if cc else ():
+    for i, col in zip(cc_idx, batched_circle_circle(cc, state)) if cc else ():
         out[i] = col
     if cp:
-        for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp, geom)):
+        for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp, geom, state)):
             out[i] = col.reverse() if (flip and col is not None) else col
     if pp:
         for i, col in zip(pp_idx, batched_polygon_polygon(pp, geom)):
@@ -163,7 +164,7 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
     geom = transport.GeometryPool(polys)
     if state is not None:
         geom.sync_from_block(state.block, state.row_of)
-    resolved = _batch_circle_collisions(eligible, geom)
+    resolved = _batch_circle_collisions(eligible, geom, state)
     hits = []
     pp_pairs = []
     for i, (a, b) in enumerate(eligible):

@@ -195,11 +195,15 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
          random near-origin circle/rect pairs assert `not box_a.disjoint(box_b)`
          whenever detect_collision finds depth>0. 1050 pass / 1 skip, golden
          bit-exact, flake8 clean, drop_box bench ~2.5 ms/frame (no regression).
-    B3d. Circle SAT pose from the block. batched_circle_circle /
-
-         batched_circle_polygon (and the intersect_* they wrap) take circle pose
-         from pose_of(uid) instead of a.position.x/.y; radius stays a body constant.
-         GATE: golden bit-exact + settling.
+    B3d. DONE. Circle SAT pose from the block. New collisions._circle_center(circle,
+         state) returns the centre (x, y): dynamic from state.block[row] by uid,
+         static from circle.position (statics never integrate). batched_circle_circle
+         and batched_circle_polygon gained a trailing `state=None` and source every
+         circle centre through it; radius stays a body constant. xpbd threads state
+         through _batch_circle_collisions into both. Bit-exact: the block mirrors the
+         body so block[row] == position.x/.y exactly. GATE: 1052 pass / 1 skip, golden
+         bit-exact, flake8 clean. Two parity tests (test_collisions): 2000 random
+         circle-circle and circle-poly pairs, body-sourced == block-sourced bit-for-bit.
     B3e. Lever arms off the block. circle find_contact_points uses pose_of(uid) for
          `position + normal*radius`; build_contacts' circle-branch lever arms and
          batched_contact_points pos_a/pos_b read pose_of(uid). After B3e,
