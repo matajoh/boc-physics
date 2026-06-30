@@ -37,9 +37,13 @@ def test_solver_core_matches_engine_substep():
 
     engine = make_engine()
     ref_bodies, ref_pairs = build_group()
+    for i, body in enumerate(ref_bodies):
+        body.uid = i
     engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
     cand_bodies, cand_pairs = build_group()
+    for i, body in enumerate(cand_bodies):
+        body.uid = i
     xpbd.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
                              gravity, sub_dt, engine.num_substeps, None)
 
@@ -67,9 +71,13 @@ def test_polygon_group_core_matches_engine():
 
     engine = make_engine()
     ref_bodies, ref_pairs = build_group()
+    for i, body in enumerate(ref_bodies):
+        body.uid = i
     engine.solve_substep(ref_bodies, ref_pairs, sub_dt)
 
     cand_bodies, cand_pairs = build_group()
+    for i, body in enumerate(cand_bodies):
+        body.uid = i
     xpbd.solve_group_substep(engine.physics, cand_bodies, cand_pairs,
                              gravity, sub_dt, engine.num_substeps, None)
 

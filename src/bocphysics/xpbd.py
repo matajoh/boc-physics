@@ -136,6 +136,8 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
     polys = list({p.uid: p for a, b in eligible for p in (a, b)
                   if isinstance(p, Polygon)}.values())
     geom = transport.GeometryPool(polys)
+    if state is not None:
+        geom.sync_from_block(state.block, state.row_of)
     resolved = _batch_circle_collisions(eligible, geom)
     hits = []
     pp_pairs = []
@@ -263,11 +265,14 @@ def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
 
 def solve_substep(physics: Physics, bodies: List[RigidBody],
                   pairs: List[Tuple[RigidBody, RigidBody]], gravity: Matrix,
-                  sub_dt: float, contacts: ContactSet = None):
+                  sub_dt: float, contacts: ContactSet = None,
+                  state: Optional["transport.State"] = None):
     """Advance the dynamic bodies one XPBD sub-step: integrate, solve positions, derive, solve velocities."""
     previous = snapshot_poses(bodies)
     integrate_block(bodies, gravity, sub_dt)
-    constraints = build_contacts(pairs, contacts)
+    if state is not None:
+        state.gather()
+    constraints = build_contacts(pairs, contacts, state)
     lambdas = solve_positions(constraints)
     derive_velocities(bodies, previous, sub_dt)
     solve_velocities(physics, constraints, lambdas, sub_dt, gravity)
@@ -275,7 +280,8 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
 
 def solve_group_substep(physics: Physics, bodies: List[RigidBody],
                         pairs: List[Tuple[RigidBody, RigidBody]], gravity: Matrix,
-                        sub_dt: float, num_substeps: int, contacts: ContactSet = None):
+                        sub_dt: float, num_substeps: int, contacts: ContactSet = None,
+                        state: Optional["transport.State"] = None):
     """Advance one group of bodies over all sub-steps with the XPBD solver."""
     for _ in range(num_substeps):
-        solve_substep(physics, bodies, pairs, gravity, sub_dt, contacts)
+        solve_substep(physics, bodies, pairs, gravity, sub_dt, contacts, state)

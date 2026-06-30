@@ -155,9 +155,24 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
          does NOT belong inside solve_substep — it must be owned where uids exist.
          The state param is in place but unfed by the live path until B3b builds
          and threads the State from the right level (engine/solve_group_substep).
-    B3b. Pool pose from the block. After `geom = GeometryPool(polys)`, call
-         geom.sync_from_block(state.block, state.row_of) (B2 method) so poly pose
-         comes from the block; statics keep rebuild pose. GATE: golden bit-exact.
+    B3b. Pool pose from the block. DONE. engine.solve_substep (serial branch only)
+         builds `state = transport.State(bodies)` where uids are guaranteed
+         (add_body assigns them) and threads it through solve_group_substep ->
+         solve_substep -> build_contacts. solve_substep calls state.gather() after
+         integrate_block (write-through refresh of the block from bodies), then
+         build_contacts calls geom.sync_from_block(state.block, state.row_of) so
+         dynamic poly pose comes from the block; statics keep ctor pose. Micro-test
+         callers of solve_group_substep pass no state (None) -> body-sourced, so
+         the uid-less unit tests are untouched. THREE bugs the live wiring exposed,
+         all root-caused: (1) _apply_pose crashed on an empty pool (all-circle
+         eligible set) -> no-op when rows == 0; (2) State.gather/scatter crashed on
+         an all-static group (block is None) -> no-op when block is None; (3) the
+         `polys` dedup `{p.uid: p}` COLLAPSES bodies that share uid=None -- a latent
+         build_contacts fragility that only bites uid-less bodies. test_solver drove
+         engine.solve_substep with uid-less bodies; giving BOTH the ref (engine,
+         block-sourced) and cand (core, body-sourced) groups real uids turned those
+         two tests into a genuine block-vs-body cross-check that now passes bit-exact.
+         990 pass, golden bit-exact, flake8 clean.
     B3c. Broad-phase AABB off the pool/block, not a.aabb. Build a per-frame aabb
          table: polys = min/max over pool geom_x/geom_y real-count rows; circles =
          pose_of(uid) +/- radius. Replace `a.aabb.disjoint(b.aabb)` with the table.

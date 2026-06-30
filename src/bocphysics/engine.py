@@ -4,7 +4,7 @@ from typing import List, Set, Tuple
 
 from bocpy import Matrix
 
-from . import solver, xpbd, xpbd_kernel
+from . import solver, transport, xpbd, xpbd_kernel
 from .bodies import AABB, RigidBody
 from .config import DetectionKind
 from .detection import Detection
@@ -114,8 +114,10 @@ class PhysicsEngine:
                                             self.gravity, sub_dt, self.num_substeps,
                                             contacts)
         else:
+            state = transport.State(bodies)
             xpbd.solve_group_substep(self.physics, bodies, pairs,
-                                     self.gravity, sub_dt, self.num_substeps, contacts)
+                                     self.gravity, sub_dt, self.num_substeps,
+                                     contacts, state)
 
     def step(self, dt: float):
         """Advances the simulation by a time step.

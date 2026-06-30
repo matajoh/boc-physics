@@ -145,10 +145,14 @@ class State:
 
     def gather(self):
         """Write every body's mutable state into the pool block."""
+        if self.block is None:
+            return
         store_state(self.bodies, self.block)
 
     def scatter(self):
         """Read the pool block back onto the bodies."""
+        if self.block is None:
+            return
         apply_state(self.bodies, self.block)
 
 
@@ -262,6 +266,8 @@ class GeometryPool:
     def _apply_pose(self):
         """Rotate+translate the base block into world pose, one batched pass."""
         rows = len(self.polys)
+        if rows == 0:
+            return
         cos = Matrix(rows, 1, self.cos)
         sin = Matrix(rows, 1, self.sin)
         px = Matrix(rows, 1, self.px)
