@@ -102,6 +102,23 @@ def assert_block_mirrors(block: Matrix, row_of: dict, bodies: List[RigidBody]):
         assert block[row, ANGLE] == body.angle
 
 
+def block_center(body: RigidBody, state: Optional["State"]) -> Matrix:
+    """Body centre as a vector: dynamic from the State block by uid, static from the body.
+
+    Description:
+        The contact lever arms point - centre need a Matrix centre, unlike the
+        broad-phase / circle-SAT readers that want scalars. A dynamic body reads
+        its centre from the block (block stores position.x/.y exactly, so the
+        vector is bit-identical to body.position); a static body has no row and
+        falls back to its immutable pose, which never integrates.
+    """
+    if state is not None:
+        row = state.row_of.get(body.uid)
+        if row is not None:
+            return state.block[row, POSITION]
+    return body.position
+
+
 def pack_pairs(pairs: List[Tuple[int, int]]) -> Optional[Matrix]:
     """Pack interior uid pairs into an (M x 2) block, or None when there are none.
 

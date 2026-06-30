@@ -86,14 +86,14 @@ def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
     return Collision(axis, depth.min())
 
 
-def _circle_center(circle, state):
-    """Circle centre (x, y): dynamic from the State block by uid, static from the body."""
-    if state is not None and circle.physics:
-        row = state.row_of.get(circle.uid)
+def _body_center(body, state):
+    """Body centre (x, y): dynamic from the State block by uid, static from the body."""
+    if state is not None:
+        row = state.row_of.get(body.uid)
         if row is not None:
             return (state.block[row, transport.POSITION.start],
                     state.block[row, transport.POSITION.start + 1])
-    return circle.position.x, circle.position.y
+    return body.position.x, body.position.y
 
 
 def batched_circle_circle(pairs, state=None):
@@ -101,8 +101,8 @@ def batched_circle_circle(pairs, state=None):
     k = len(pairs)
     dx, dy, rsum = [0] * k, [0] * k, [0] * k
     for i, (a, b) in enumerate(pairs):
-        ax, ay = _circle_center(a, state)
-        bx, by = _circle_center(b, state)
+        ax, ay = _body_center(a, state)
+        bx, by = _body_center(b, state)
         dx[i] = bx - ax
         dy[i] = by - ay
         rsum[i] = (a.radius + b.radius) * 0.97
@@ -144,10 +144,11 @@ def batched_circle_polygon(pairs, geom, state=None):
     dpy = [0] * k
     valid = Matrix.zeros((k, acap))
     for i, (c, p) in enumerate(pairs):
-        cx[i], cy[i] = _circle_center(c, state)
+        cx[i], cy[i] = _body_center(c, state)
         rad[i] = c.radius * 0.97
-        dpx[i] = p.position.x - cx[i]
-        dpy[i] = p.position.y - cy[i]
+        px, py = _body_center(p, state)
+        dpx[i] = px - cx[i]
+        dpy[i] = py - cy[i]
         valid[i, :len(p.normals)] = 1.0
 
     vmax = geom.vmax
@@ -200,12 +201,13 @@ def batched_circle_polygon(pairs, geom, state=None):
     return out
 
 
-def batched_polygon_polygon(pairs, geom):
+def batched_polygon_polygon(pairs, geom, state=None):
     """Resolve K (polygon, polygon) pairs at once; return one Collision-or-None per pair.
 
     geom is the patch GeometryPool. SAT axes are both polys' normals padded to
     nmax each (zero normals masked off); verts read as whole rows by uid via take,
-    padded with vertex 0 so spare slots never extend a projection interval.
+    padded with vertex 0 so spare slots never extend a projection interval. When
+    state is given, the normal-orientation centres are sourced from the block.
     """
     k = len(pairs)
     ncap = 2 * geom.nmax
@@ -218,8 +220,10 @@ def batched_polygon_polygon(pairs, geom):
     for i, (a, b) in enumerate(pairs):
         valid[i, :len(a.normals)] = 1.0
         valid[i, geom.nmax:geom.nmax + len(b.normals)] = 1.0
-        dpx[i] = b.position.x - a.position.x
-        dpy[i] = b.position.y - a.position.y
+        bcx, bcy = _body_center(b, state)
+        acx, acy = _body_center(a, state)
+        dpx[i] = bcx - acx
+        dpy[i] = bcy - acy
     avx, avy = geom.geom_x.take(rows_a, 0), geom.geom_y.take(rows_a, 0)
     bvx, bvy = geom.geom_x.take(rows_b, 0), geom.geom_y.take(rows_b, 0)
     nx = Matrix.concat([geom.norm_x.take(rows_a, 0), geom.norm_x.take(rows_b, 0)], 1)

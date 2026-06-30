@@ -4,6 +4,7 @@ from typing import Tuple
 
 from bocpy import Matrix
 
+from . import transport
 from .bodies import Circle, Polygon, RigidBody
 from .collisions import Collision
 
@@ -69,7 +70,7 @@ def _point_mask(n: int, vmax: int, nvb: list, nva: list) -> Matrix:
     return mask
 
 
-def batched_contact_points(geom, pairs: list, tol=1e-5) -> Matrix:
+def batched_contact_points(geom, pairs: list, tol=1e-5, state=None) -> Matrix:
     """Localise the two-point contact manifold for every polygon pair at once.
 
     Description:
@@ -85,8 +86,9 @@ def batched_contact_points(geom, pairs: list, tol=1e-5) -> Matrix:
         rule could collapse onto one side. Returns an (n x 13) Matrix aligned with
         pairs; column 0 is count (1 or 2) and each contact point occupies the next
         six columns [px, py, ra_x, ra_y, rb_x, rb_y] -- its world position and the
-        lever arms point - a.position and point - b.position. The second point's
-        block is unused when count is 1. Both scan directions are collapsed to
+        lever arms point - centre_a and point - centre_b, where each centre is
+        the body's State-block pose when state is given (else its scalar pose).
+        The second point's block is unused when count is 1. Both scan directions are collapsed to
         per-point closest-edge distances, concatenated into one row per pair; a
         masked min picks the contact band, argmax over the validity mask picks
         contact0, and a within-band argmax over Chebyshev separation picks
@@ -101,9 +103,9 @@ def batched_contact_points(geom, pairs: list, tol=1e-5) -> Matrix:
     pos_b = [None] * n
     for i, (a, b) in enumerate(pairs):
         rows_a[i] = geom.row_of[a.uid]
-        pos_a[i] = a.position
+        pos_a[i] = transport.block_center(a, state)
         rows_b[i] = geom.row_of[b.uid]
-        pos_b[i] = b.position
+        pos_b[i] = transport.block_center(b, state)
 
     ax, ay = geom.geom_x.take(rows_a, 0), geom.geom_y.take(rows_a, 0)
     bx, by = geom.geom_x.take(rows_b, 0), geom.geom_y.take(rows_b, 0)
@@ -208,21 +210,23 @@ def scan_polygon_edges(edges: Matrix, points: Matrix, tol: float, state: list,
 def find_contact_points(a: RigidBody,
                         b: RigidBody,
                         collision: Collision,
-                        geom) -> Tuple:
+                        geom,
+                        state=None) -> Tuple:
     """Find the contact points for a collision from the overlapping configuration.
 
     Description:
         A pure geometry query with no side effects, returning (c0, c1, id0, id1).
         The contact points are read from the current overlapping poses; each
         carries a (source_uid, vertex_index) feature ID for warm-starting. A
-        circle contributes its single surface point with ID (circle_uid, 0).
+        circle contributes its single surface point with ID (circle_uid, 0). When
+        state is given, a circle's centre is sourced from the State block.
         Positional correction is the caller's responsibility -- call separate
         explicitly afterwards.
     """
     if isinstance(a, Circle):
-        points = a.position + collision.normal * a.radius, None, (a.uid, 0), None
+        points = transport.block_center(a, state) + collision.normal * a.radius, None, (a.uid, 0), None
     elif isinstance(b, Circle):
-        points = b.position - collision.normal * b.radius, None, (b.uid, 0), None
+        points = transport.block_center(b, state) - collision.normal * b.radius, None, (b.uid, 0), None
     else:
         points = find_contact_points_polygon_polygon(a, b, geom)
 

@@ -126,7 +126,7 @@ def _batch_circle_collisions(pairs, geom, state=None):
         for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp, geom, state)):
             out[i] = col.reverse() if (flip and col is not None) else col
     if pp:
-        for i, col in zip(pp_idx, batched_polygon_polygon(pp, geom)):
+        for i, col in zip(pp_idx, batched_polygon_polygon(pp, geom, state)):
             out[i] = col
     return out
 
@@ -176,7 +176,7 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
             grid_k = len(pp_pairs)
             pp_pairs.append((a, b))
         hits.append((a, b, collision, grid_k))
-    manifolds = batched_contact_points(geom, pp_pairs) if pp_pairs else None
+    manifolds = batched_contact_points(geom, pp_pairs, state=state) if pp_pairs else None
     for a, b, collision, grid_k in hits:
         normal = collision.normal
         if grid_k is not None:
@@ -188,8 +188,10 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
                 points.append((manifolds[k, o], manifolds[k, o + 1],
                                manifolds[k, o + 2:o + 4], manifolds[k, o + 4:o + 6]))
         else:
-            c0, c1, _id0, _id1 = find_contact_points(a, b, collision, geom)
-            points = [(c.x, c.y, c - a.position, c - b.position)
+            c0, c1, _id0, _id1 = find_contact_points(a, b, collision, geom, state)
+            ca = transport.block_center(a, state)
+            cb = transport.block_center(b, state)
+            points = [(c.x, c.y, c - ca, c - cb)
                       for c in (c0, c1) if c is not None]
         for px, py, r_a, r_b in points:
             if contacts is not None:

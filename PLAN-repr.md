@@ -204,12 +204,25 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
          body so block[row] == position.x/.y exactly. GATE: 1052 pass / 1 skip, golden
          bit-exact, flake8 clean. Two parity tests (test_collisions): 2000 random
          circle-circle and circle-poly pairs, body-sourced == block-sourced bit-for-bit.
-    B3e. Lever arms off the block. circle find_contact_points uses pose_of(uid) for
-         `position + normal*radius`; build_contacts' circle-branch lever arms and
-         batched_contact_points pos_a/pos_b read pose_of(uid). After B3e,
-         build_contacts touches NO body.position/.angle. GATE: golden bit-exact +
-         settling; grep build_contacts + contacts.py for `.position`/`.angle` == 0
-         scalar pose reads (radius/mass constants excepted).
+    B3e. DONE. All remaining build_contacts pose reads off the block. New
+         transport.block_center(body, state) returns a Matrix centre (the slice
+         read state.block[row, POSITION] -- one C row copy, no per-float box) for
+         lever arms; dynamic from the block by uid, static from body.position.
+         contacts.find_contact_points (circle position +/- normal*radius) and
+         contacts.batched_contact_points (poly lever-arm centres pos_a/pos_b) gained
+         state and source centres through block_center. build_contacts' circle branch
+         computes ca/cb via block_center. The completeness grep ALSO surfaced
+         polygon-orientation centres in the batched SAT (batched_circle_polygon poly
+         centre, batched_polygon_polygon a/b centres) -- block-sourced too via a
+         renamed collisions._body_center (was _circle_center; now generic, keys on
+         row_of membership NOT body.physics so it is robust to bodies lacking the
+         attribute). batched_polygon_polygon gained state; xpbd threads it through.
+         After B3e the LIVE build_contacts path touches NO dynamic body pose; the
+         only residual collisions.py .position reads are the non-batched oracle
+         (detect_collision / intersect_*, used by tests + spawn; the build_contacts
+         fallback to detect_collision is dead -- resolved covers every eligible idx)
+         and the static fallback (valid forever). contacts.py has ZERO body-pose
+         reads. GATE: 1052 pass / 1 skip, golden bit-exact, flake8 clean.
 
     OPEN for B3: confirm dynamic-circle rows resolve in state.row_of (circles carry
     pose in block cols 1,2 but have NO geometry row — they must still get a State
