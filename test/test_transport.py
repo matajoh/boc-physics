@@ -181,6 +181,35 @@ def test_geometry_pool_sync_from_matches_body_sync(seed):
             assert pool.norm_y[r, j] == reference.norm_y[r, j]
 
 
+@pytest.mark.parametrize("seed", range(30))
+def test_geometry_pool_sync_from_block_matches_bodies(seed):
+    """Refreshing the pool from a dynamics block matches body pose for dyn and static."""
+    rng = random.Random(seed)
+    bodies = [build_body(s) for s in random_states(rng, rng.randint(2, 10))]
+    for i, body in enumerate(bodies):
+        body.uid = i
+    for body in bodies:
+        if isinstance(body, Polygon) and rng.random() < 0.3:
+            body.physics = False
+    polys = [b for b in bodies if isinstance(b, Polygon)]
+    if not polys:
+        pytest.skip("no polygons in this draw")
+
+    state = transport.State(bodies)
+    pool = transport.GeometryPool(bodies)
+    if state.block is not None:
+        pool.sync_from_block(state.block, state.row_of)
+
+    reference = transport.GeometryPool(bodies)
+    for r in range(pool.geom_x.rows):
+        for v in range(pool.vmax):
+            assert pool.geom_x[r, v] == reference.geom_x[r, v]
+            assert pool.geom_y[r, v] == reference.geom_y[r, v]
+        for j in range(pool.nmax):
+            assert pool.norm_x[r, j] == reference.norm_x[r, j]
+            assert pool.norm_y[r, j] == reference.norm_y[r, j]
+
+
 def test_geometry_pool_excludes_circles():
     """Circles have no geometry, so they never get a pool row."""
     rng = random.Random(0)

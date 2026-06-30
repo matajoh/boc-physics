@@ -101,12 +101,19 @@ B1. Pose-source the geometry pool (refactor, bit-exact). DONE.
     self.px/py/cos/sin then _apply_pose() (cos/sin per-element math for bit-exact).
     New fuzz test_geometry_pool_sync_from_matches_body_sync (30 seeds). 930 pass.
 
-B2. One canonical row space (geometry ON State, statics get rows).
-    Make the dynamics (N,7) block and the geometry rows share ONE uid->row map:
-    dynamics first, statics appended (statics integrate never, transform once at
-    rebuild). Add a static pose table seeded at rebuild. After this, the pool can
-    supply EVERY body's current pose by row without a scalar read. GATE: round-trip
-    test (pool pose == body pose for dyn+static), golden bit-exact.
+B2. One canonical row space (geometry ON State, statics get rows). DONE (revised).
+    Goal: the pool can supply EVERY poly's current pose by row without a scalar
+    read. REVISED DESIGN (cleaner than literal statics-in-block): statics are NOT
+    appended to the integrated (N,7) block (that would create dead rows integrate
+    must skip). Instead the dynamics block stays dynamics-only; GeometryPool keeps
+    each static poly's pose in its own px/py/cos/sin (seeded at rebuild) and bridges
+    to the dynamics block BY UID. New sync_from_block(block, row_of): dynamic polys
+    read pose from block[row_of[uid]] (POSITION/ANGLE cols), static polys keep
+    rebuild pose; cos/sin per-element math for bit-exact. GATE: round-trip fuzz
+    test_geometry_pool_sync_from_block_matches_bodies (30 seeds, mixed dyn/static)
+    == body-sourced reference; golden bit-exact; flake8. 960 pass. NOTE the two row
+    spaces (State.row_of dyn, GeometryPool.row_of polys) are bridged by uid, not
+    merged — accepted (uid dict lookup is cheap vs the matrix ops).
 
 B3. Pool-source build_contacts' remaining scalar reads.
     Feed GeometryPool.sync_from() from the State block (dyn) + static table (B2).

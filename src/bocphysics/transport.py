@@ -218,6 +218,27 @@ class GeometryPool:
             self.py[i] = py[i]
         self._apply_pose()
 
+    def sync_from_block(self, block: Matrix, row_of: dict):
+        """Refresh world pose from a packed dynamics block; statics keep rebuild pose.
+
+        Description:
+            row_of maps a dynamic body's uid to its row in the (N x 7) block. Each
+            dynamic polygon reads its pose from that row with no scalar body
+            access; static polygons are absent from the block and retain the pose
+            captured at rebuild in self.px/py/cos/sin. cos/sin are taken per
+            element with math so the result matches the body-sourced sync exactly.
+        """
+        for i, p in enumerate(self.polys):
+            r = row_of.get(p.uid)
+            if r is None:
+                continue
+            self.px[i] = block[r, POSITION.start]
+            self.py[i] = block[r, POSITION.start + 1]
+            angle = block[r, ANGLE]
+            self.cos[i] = math.cos(angle)
+            self.sin[i] = math.sin(angle)
+        self._apply_pose()
+
     def _apply_pose(self):
         """Rotate+translate the base block into world pose, one batched pass."""
         rows = len(self.polys)
