@@ -99,7 +99,7 @@ def pack_colour(colour: list, rows: Dict[int, int]) -> ConstraintBlock:
     """Flatten one colour's constraints into per-contact SoA blocks and row indices."""
     n_rows, ra_rows, rb_rows, rap_rows, rbp_rows = [], [], [], [], []
     depth_rows, bias_rows, idx_a, idx_b = [], [], [], []
-    for a, b, normal, r_a, r_b, depth, bias in colour:
+    for a, b, normal, r_a, r_b, depth, bias, _ia, _ib in colour:
         ra_perp = r_a.perpendicular()
         rb_perp = r_b.perpendicular()
         n_rows += [normal.x, normal.y]

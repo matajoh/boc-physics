@@ -307,3 +307,26 @@ def test_broad_box_never_rejects_a_real_overlap(seed):
     collision = detect_collision(a, b)
     if collision is not None and collision.depth > 0:
         assert not box_a.disjoint(box_b)
+
+
+def test_build_contacts_row_indices_match_state_rows():
+    """Each constraint is tagged with its bodies' State-block rows; None when no state."""
+    a = Circle.create(1.0, 2.0, (200, 100, 50))
+    b = Circle.create(1.0, 2.0, (50, 120, 200))
+    a.physics = b.physics = True
+    a.move_to(Matrix.vector([0.0, 0.0]))
+    b.move_to(Matrix.vector([1.0, 0.0]))
+    a.uid, b.uid = 0, 1
+    state = transport.State([a, b])
+    pairs = [(a, b)]
+
+    with_state = xpbd.build_contacts(pairs, state=state)
+    assert with_state
+    for c in with_state:
+        assert c.idx_a == state.row_of[c.a.uid]
+        assert c.idx_b == state.row_of[c.b.uid]
+
+    without_state = xpbd.build_contacts(pairs)
+    assert without_state
+    for c in without_state:
+        assert c.idx_a is None and c.idx_b is None

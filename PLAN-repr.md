@@ -229,17 +229,44 @@ B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps
     row). Static-circle pose ownership RESOLVED in B3c: read the immutable static
     body.position directly (valid forever -- statics never integrate), no table.
 
-B4. Row-index the constraints; solver writes the pool.
-    ContactConstraint carries pool row indices (idx_a, idx_b) alongside the body
-    refs. Serial apply_positional_impulse / apply_velocity_impulse and the colour
-    kernel scatter impulses onto the PERSISTENT State block by row (kernel already
-    computes idx_a/idx_b + scatter-adds; point it at the persistent block instead
-    of pack_poses/pack_bodies-then-unpack). Mirror still writes bodies. GATE:
-    serial golden bit-exact, colour settling-band.
+B4. Row-index the constraints; the serial solver writes the State block.
+    SCOPE NARROWED: the BOC parallel path (parallel.solve_intra_substep) calls the
+    SERIAL xpbd.solve_substep per patch, NOT the colour kernel. So the B6 win only
+    needs the SERIAL path on the block. The colour kernel (xpbd_kernel, engine
+    batched=True path) keeps its own per-substep pack_poses/pack_bodies and is OFF
+    the critical path -- left as-is in B4 (optional later migration). Substeps:
+
+    B4a. ContactConstraint gains idx_a, idx_b (Optional[int] row indices into the
+         State block, or None for a static / when state is None). build_contacts
+         populates them via state.row_of.get(uid). Update the 3 positional unpack
+         sites (xpbd.solve_positions, xpbd.solve_velocities, xpbd_kernel.pack_colour
+         -- the kernel just ignores the new fields, it builds its own id()-based
+         rows). Pure plumbing, fields unused -> golden bit-exact, colour unaffected.
+         DONE: 1052 pass / 1 skip, flake8 clean; added test_build_contacts_row_
+         indices_match_state_rows (idx == row_of with state, None without).
+    B4b. Serial apply_positional_impulse / apply_velocity_impulse ALSO scatter the
+         SAME delta onto state.block[idx] (mirror) when the block + idx are passed;
+         bodies are still written unchanged so the body arithmetic (and thus the
+         golden) is byte-identical. solve_positions / solve_velocities thread
+         state.block + c.idx_a/c.idx_b. After the solve, assert_block_mirrors(block,
+         row_of, bodies) confirms the scattered block equals the bodies. The block
+         writes are REDUNDANT in B4 (next substep's state.gather() re-mirrors after
+         integrate) -- they exist to establish + prove the row-scatter machinery so
+         B5 (integrate on block, drop gather) and B6 (drop body writes) can build on
+         a verified block write. GATE: golden bit-exact.
+    Delta arithmetic (bit-exact mirror): position body a.move(P), P=impulse*-inv_m
+    -> block[idx,POSITION] += P (block row started == body.position via gather, same
+    Matrix P added -> equal). Angle body a.rotate_to(a.angle - X), X=r_a.cross(imp)*
+    inv_I -> block[idx,ANGLE] -= X (block ANGLE started == a.angle). Velocity impulse
+    mirrors the same way onto VELOCITY (cols 3,4) / SPIN (col 6). Read X before the
+    body write; apply the identical scalar/Matrix to both.
 
 B5. Integrate + derive on the State block in place.
     integrate_block mutates State columns directly; snapshot_poses reads State
     columns; derive_velocities reads/writes State columns. Bodies still mirrored.
+    Once integrate is on the block, the top-of-substep state.gather() drops and the
+    B4b block writes become load-bearing (carried substep-to-substep via the block,
+    not the body) -- golden staying bit-exact here is the real cross-substep proof.
     GATE: golden bit-exact.
 
 B6. Persist State across substeps; drop the per-substep mirror (THE WIN).

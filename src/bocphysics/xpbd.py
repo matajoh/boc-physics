@@ -48,6 +48,8 @@ class ContactConstraint(NamedTuple):
     r_b: Matrix
     depth: float
     bias_velocity: float
+    idx_a: Optional[int]
+    idx_b: Optional[int]
 
 
 def generalized_inverse_mass(body: RigidBody, r: Matrix, direction: Matrix) -> float:
@@ -179,6 +181,8 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
     manifolds = batched_contact_points(geom, pp_pairs, state=state) if pp_pairs else None
     for a, b, collision, grid_k in hits:
         normal = collision.normal
+        idx_a = state.row_of.get(a.uid) if state is not None else None
+        idx_b = state.row_of.get(b.uid) if state is not None else None
         if grid_k is not None:
             # Packed row: count, then stride-6 blocks [px, py, ra_x, ra_y, rb_x, rb_y] per point.
             k = grid_k
@@ -197,7 +201,8 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
             if contacts is not None:
                 contacts.add((px, py))
             bias_velocity = relative_normal_velocity(a, b, r_a, r_b, normal)
-            constraints.append(ContactConstraint(a, b, normal, r_a, r_b, collision.depth, bias_velocity))
+            constraints.append(ContactConstraint(a, b, normal, r_a, r_b, collision.depth,
+                                                 bias_velocity, idx_a, idx_b))
     return constraints
 
 
@@ -222,7 +227,7 @@ def solve_positions(constraints: List[ContactConstraint]) -> List[float]:
         list is one-to-one with constraints so the velocity pass can zip them.
     """
     lambdas = []
-    for a, b, normal, r_a, r_b, depth, _bias in constraints:
+    for a, b, normal, r_a, r_b, depth, _bias, _ia, _ib in constraints:
         w = generalized_inverse_mass(a, r_a, normal) + generalized_inverse_mass(b, r_b, normal)
         if w < EPS:
             lambdas.append(0.0)
@@ -272,7 +277,7 @@ def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
     """
     g = gravity.magnitude()
     for constraint, lam_n in zip(constraints, lambdas):
-        a, b, normal, r_a, r_b, _depth, bias_velocity = constraint
+        a, b, normal, r_a, r_b, _depth, bias_velocity, _ia, _ib = constraint
         v = contact_velocity(b, r_b) - contact_velocity(a, r_a)
         vn = v.vecdot(normal)
         vt = v - normal * vn
