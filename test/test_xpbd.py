@@ -282,6 +282,36 @@ def test_random_pile_stays_finite_and_bounded(seed):
         assert box.position.y < 13.0
 
 
+def test_position_pass_mirrors_poses_onto_the_state_block():
+    """B4b: solve_positions scatters poses onto the block bit-for-bit; bodies stay identical."""
+    def build_pile():
+        floor = make_static_box(0, 10)
+        boxes = []
+        for level in range(3):
+            box = Polygon.create_rectangle(2.0, 2.0, 1.0, (50, 100, 200))
+            box.physics = True
+            box.move_to(Matrix.vector([0.1 * level, -3.0 * level]))
+            boxes.append(box)
+        pairs = [(boxes[i], boxes[j]) for i in range(len(boxes)) for j in range(i + 1, len(boxes))]
+        pairs += [(box, floor) for box in boxes]
+        for uid, body in enumerate([floor] + boxes):
+            body.uid = uid
+        return boxes, pairs
+
+    ref_boxes, ref_pairs = build_pile()
+    cand_boxes, cand_pairs = build_pile()
+    cand_state = transport.State(cand_boxes)
+    for _ in range(120):
+        xpbd.solve_group_substep(FRICTION, ref_boxes, ref_pairs, GRAVITY, SUB_DT, 4)
+        xpbd.solve_group_substep(FRICTION, cand_boxes, cand_pairs, GRAVITY, SUB_DT, 4, state=cand_state)
+
+    for ref, cand in zip(ref_boxes, cand_boxes):
+        assert cand.position.x == ref.position.x
+        assert cand.position.y == ref.position.y
+        assert cand.angle == ref.angle
+    transport.assert_block_mirrors(cand_state.block, cand_state.row_of, cand_boxes)
+
+
 @pytest.mark.parametrize("seed", range(60))
 def test_broad_box_never_rejects_a_real_overlap(seed):
     """The bounding-circle broad-phase cull keeps every pair that actually collides."""

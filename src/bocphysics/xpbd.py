@@ -207,17 +207,30 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
 
 
 def apply_positional_impulse(a: RigidBody, b: RigidBody, r_a: Matrix,
-                             r_b: Matrix, impulse: Matrix):
+                             r_b: Matrix, impulse: Matrix, block: Optional[Matrix] = None,
+                             idx_a: Optional[int] = None, idx_b: Optional[int] = None):
     """Apply a positional impulse at the contact: a moves -impulse, b moves +impulse (mass-weighted)."""
+    pos, an = transport.POSITION, transport.ANGLE
     if a.physics:
-        a.move(impulse * -a.inv_mass)
-        a.rotate_to(a.angle - r_a.cross(impulse) * a.inv_inertia)
+        da = impulse * -a.inv_mass
+        a.move(da)
+        spin_a = r_a.cross(impulse) * a.inv_inertia
+        a.rotate_to(a.angle - spin_a)
+        if block is not None and idx_a is not None:
+            block[idx_a, pos] += da
+            block[idx_a, an] -= spin_a
     if b.physics:
-        b.move(impulse * b.inv_mass)
-        b.rotate_to(b.angle + r_b.cross(impulse) * b.inv_inertia)
+        db = impulse * b.inv_mass
+        b.move(db)
+        spin_b = r_b.cross(impulse) * b.inv_inertia
+        b.rotate_to(b.angle + spin_b)
+        if block is not None and idx_b is not None:
+            block[idx_b, pos] += db
+            block[idx_b, an] += spin_b
 
 
-def solve_positions(constraints: List[ContactConstraint]) -> List[float]:
+def solve_positions(constraints: List[ContactConstraint],
+                    block: Optional[Matrix] = None) -> List[float]:
     """One Gauss-Seidel position pass; return the normal lambda per constraint, in order.
 
     Description:
@@ -225,16 +238,18 @@ def solve_positions(constraints: List[ContactConstraint]) -> List[float]:
         where w is the summed generalised inverse mass (compliance alpha = 0).
         The returned lambda feeds the friction bound in solve_velocities; the
         list is one-to-one with constraints so the velocity pass can zip them.
+        When a State block is given, each impulse is mirrored onto the bodies'
+        block rows so the block tracks the scalar pose bit-for-bit (the bridge).
     """
     lambdas = []
-    for a, b, normal, r_a, r_b, depth, _bias, _ia, _ib in constraints:
+    for a, b, normal, r_a, r_b, depth, _bias, idx_a, idx_b in constraints:
         w = generalized_inverse_mass(a, r_a, normal) + generalized_inverse_mass(b, r_b, normal)
         if w < EPS:
             lambdas.append(0.0)
             continue
         magnitude = depth / w
         lambdas.append(magnitude)
-        apply_positional_impulse(a, b, r_a, r_b, normal * magnitude)
+        apply_positional_impulse(a, b, r_a, r_b, normal * magnitude, block, idx_a, idx_b)
     return lambdas
 
 
@@ -306,7 +321,9 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
     if state is not None:
         state.gather()
     constraints = build_contacts(pairs, contacts, state)
-    lambdas = solve_positions(constraints)
+    lambdas = solve_positions(constraints, state.block if state is not None else None)
+    if state is not None:
+        transport.assert_block_mirrors(state.block, state.row_of, bodies)
     derive_velocities(bodies, previous, sub_dt)
     solve_velocities(physics, constraints, lambdas, sub_dt, gravity)
 

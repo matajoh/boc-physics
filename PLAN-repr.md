@@ -244,26 +244,39 @@ B4. Row-index the constraints; the serial solver writes the State block.
          rows). Pure plumbing, fields unused -> golden bit-exact, colour unaffected.
          DONE: 1052 pass / 1 skip, flake8 clean; added test_build_contacts_row_
          indices_match_state_rows (idx == row_of with state, None without).
-    B4b. Serial apply_positional_impulse / apply_velocity_impulse ALSO scatter the
-         SAME delta onto state.block[idx] (mirror) when the block + idx are passed;
-         bodies are still written unchanged so the body arithmetic (and thus the
-         golden) is byte-identical. solve_positions / solve_velocities thread
-         state.block + c.idx_a/c.idx_b. After the solve, assert_block_mirrors(block,
-         row_of, bodies) confirms the scattered block equals the bodies. The block
-         writes are REDUNDANT in B4 (next substep's state.gather() re-mirrors after
-         integrate) -- they exist to establish + prove the row-scatter machinery so
-         B5 (integrate on block, drop gather) and B6 (drop body writes) can build on
-         a verified block write. GATE: golden bit-exact.
+    B4b. Serial apply_positional_impulse ALSO scatters the SAME pose delta onto
+         state.block[idx] (mirror) when the block + idx are passed; bodies are still
+         written unchanged so the body arithmetic (and thus the golden) is byte-
+         identical. solve_positions threads state.block + c.idx_a/c.idx_b. After the
+         position pass, assert_block_mirrors(block, row_of, bodies) confirms the
+         scattered block POSITION/ANGLE equals the bodies (the existing build_contacts
+         assert runs post-gather so it cannot catch a bad scatter -- this one runs
+         BEFORE the next gather, so it is the real proof). The block writes are
+         REDUNDANT in B4 (next substep's state.gather() re-mirrors after integrate) --
+         they exist to establish + prove the row-scatter machinery so B5 (integrate on
+         block, drop gather) and B6 (drop body writes) can build on a verified block
+         write. GATE: golden bit-exact.
+         DONE: 1053 pass / 1 skip, golden bit-exact, flake8 clean; the in-substep
+         assert fires on every serial engine frame; added test_position_pass_mirrors_
+         poses_onto_the_state_block (120-frame pile, body poses identical with/without
+         state, block mirrors bodies at the end).
     Delta arithmetic (bit-exact mirror): position body a.move(P), P=impulse*-inv_m
-    -> block[idx,POSITION] += P (block row started == body.position via gather, same
-    Matrix P added -> equal). Angle body a.rotate_to(a.angle - X), X=r_a.cross(imp)*
-    inv_I -> block[idx,ANGLE] -= X (block ANGLE started == a.angle). Velocity impulse
-    mirrors the same way onto VELOCITY (cols 3,4) / SPIN (col 6). Read X before the
-    body write; apply the identical scalar/Matrix to both.
+    -> block[idx,POSITION.start]+=P.x, [+1]+=P.y (block row started == body.position
+    via gather, same float added -> equal). Angle body a.rotate_to(a.angle - X),
+    X=r_a.cross(imp)*inv_I -> block[idx,ANGLE]-=X (block ANGLE started == a.angle).
+    Hoist P and X to locals, apply the identical value to both body and block.
+    VELOCITY is NOT mirrored in B4b: the block VELOCITY/SPIN cols are set at gather
+    time (post-integrate) and derive_velocities overwrites the BODY velocity without
+    touching the block, so the block velocity is stale at solve_velocities entry.
+    The velocity scatter (apply_velocity_impulse -> VELOCITY cols 3,4 / SPIN col 6)
+    therefore lands in B5, paired with derive_velocities becoming block-aware.
 
 B5. Integrate + derive on the State block in place.
     integrate_block mutates State columns directly; snapshot_poses reads State
-    columns; derive_velocities reads/writes State columns. Bodies still mirrored.
+    columns; derive_velocities reads/writes State columns (this is also where the
+    velocity-impulse scatter from B4b's deferred half lands: solve_velocities threads
+    the block and apply_velocity_impulse mirrors onto VELOCITY/SPIN). Bodies still
+    mirrored.
     Once integrate is on the block, the top-of-substep state.gather() drops and the
     B4b block writes become load-bearing (carried substep-to-substep via the block,
     not the body) -- golden staying bit-exact here is the real cross-substep proof.
