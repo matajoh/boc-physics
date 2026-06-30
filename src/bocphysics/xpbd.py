@@ -259,26 +259,41 @@ def snapshot_poses(bodies: List[RigidBody]) -> List[Tuple[float, float, float]]:
 
 
 def derive_velocities(bodies: List[RigidBody],
-                      previous: List[Tuple[float, float, float]], h: float):
+                      previous: List[Tuple[float, float, float]], h: float,
+                      state: Optional["transport.State"] = None):
     """Set each body's velocity from its position delta over the sub-step (the XPBD velocity update)."""
     for body, (px, py, pa) in zip(bodies, previous):
         body.linear_velocity = Matrix.vector([(body.position.x - px) / h, (body.position.y - py) / h])
         body.angular_velocity = (body.angle - pa) / h
+        if state is not None:
+            row = state.row_of.get(body.uid)
+            if row is not None:
+                state.block[row, transport.VELOCITY] = body.linear_velocity
+                state.block[row, transport.SPIN] = body.angular_velocity
 
 
 def apply_velocity_impulse(a: RigidBody, b: RigidBody, r_a: Matrix,
-                           r_b: Matrix, impulse: Matrix):
+                           r_b: Matrix, impulse: Matrix, block: Optional[Matrix] = None,
+                           idx_a: Optional[int] = None, idx_b: Optional[int] = None):
     """Apply a velocity impulse at the contact: a gets -impulse, b gets +impulse (mass-weighted)."""
+    vel, spin = transport.VELOCITY, transport.SPIN
     if a.physics:
         a.linear_velocity = a.linear_velocity.scaled_add(-a.inv_mass, impulse)
         a.angular_velocity -= r_a.cross(impulse) * a.inv_inertia
+        if block is not None and idx_a is not None:
+            block[idx_a, vel] = a.linear_velocity
+            block[idx_a, spin] = a.angular_velocity
     if b.physics:
         b.linear_velocity = b.linear_velocity.scaled_add(b.inv_mass, impulse)
         b.angular_velocity += r_b.cross(impulse) * b.inv_inertia
+        if block is not None and idx_b is not None:
+            block[idx_b, vel] = b.linear_velocity
+            block[idx_b, spin] = b.angular_velocity
 
 
 def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
-                     lambdas: List[float], h: float, gravity: Matrix):
+                     lambdas: List[float], h: float, gravity: Matrix,
+                     block: Optional[Matrix] = None):
     """One velocity pass: dynamic Coulomb friction (Eqn 30) then restitution (Eqn 34).
 
     Description:
@@ -292,7 +307,7 @@ def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
     """
     g = gravity.magnitude()
     for constraint, lam_n in zip(constraints, lambdas):
-        a, b, normal, r_a, r_b, _depth, bias_velocity, _ia, _ib = constraint
+        a, b, normal, r_a, r_b, _depth, bias_velocity, idx_a, idx_b = constraint
         v = contact_velocity(b, r_b) - contact_velocity(a, r_a)
         vn = v.vecdot(normal)
         vt = v - normal * vn
@@ -303,12 +318,12 @@ def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
             w_t = generalized_inverse_mass(a, r_a, t) + generalized_inverse_mass(b, r_b, t)
             if w_t > EPS:
                 dvt = -min(h * physics.dynamic_friction * f_n, vt_mag)
-                apply_velocity_impulse(a, b, r_a, r_b, t * (dvt / w_t))
+                apply_velocity_impulse(a, b, r_a, r_b, t * (dvt / w_t), block, idx_a, idx_b)
         e = 0.0 if abs(vn) <= 2 * g * h else physics.restitution
         w_n = generalized_inverse_mass(a, r_a, normal) + generalized_inverse_mass(b, r_b, normal)
         if w_n > EPS:
             dvn = -vn + max(-e * bias_velocity, 0.0)
-            apply_velocity_impulse(a, b, r_a, r_b, normal * (dvn / w_n))
+            apply_velocity_impulse(a, b, r_a, r_b, normal * (dvn / w_n), block, idx_a, idx_b)
 
 
 def solve_substep(physics: Physics, bodies: List[RigidBody],
@@ -324,8 +339,11 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
     lambdas = solve_positions(constraints, state.block if state is not None else None)
     if state is not None:
         transport.assert_block_mirrors(state.block, state.row_of, bodies)
-    derive_velocities(bodies, previous, sub_dt)
-    solve_velocities(physics, constraints, lambdas, sub_dt, gravity)
+    derive_velocities(bodies, previous, sub_dt, state)
+    solve_velocities(physics, constraints, lambdas, sub_dt, gravity,
+                     state.block if state is not None else None)
+    if state is not None:
+        transport.assert_block_mirrors(state.block, state.row_of, bodies)
 
 
 def solve_group_substep(physics: Physics, bodies: List[RigidBody],

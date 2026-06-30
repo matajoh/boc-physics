@@ -271,24 +271,52 @@ B4. Row-index the constraints; the serial solver writes the State block.
     The velocity scatter (apply_velocity_impulse -> VELOCITY cols 3,4 / SPIN col 6)
     therefore lands in B5, paired with derive_velocities becoming block-aware.
 
-B5. Integrate + derive on the State block in place.
-    integrate_block mutates State columns directly; snapshot_poses reads State
-    columns; derive_velocities reads/writes State columns (this is also where the
-    velocity-impulse scatter from B4b's deferred half lands: solve_velocities threads
-    the block and apply_velocity_impulse mirrors onto VELOCITY/SPIN). Bodies still
-    mirrored.
-    Once integrate is on the block, the top-of-substep state.gather() drops and the
-    B4b block writes become load-bearing (carried substep-to-substep via the block,
-    not the body) -- golden staying bit-exact here is the real cross-substep proof.
-    GATE: golden bit-exact.
+B5. Integrate writes the State block; drop the gather (block becomes load-bearing).
+    SCOPE NOTE: B5 keeps the bodies the authoritative READ surface (still mirrored)
+    and migrates only the WRITE side onto the block, plus integrate reading the
+    block. That is all the serial golden needs: bodies stay in lockstep via the
+    mirror, so contact_velocity / derive / snapshot may keep reading bodies. The
+    block-READ migration (contact_velocity / derive / snapshot sourced from the
+    block) is only load-bearing once the body mirror is dropped, so it lands in B6
+    with the parallel rewire. Substeps:
+
+    B5a. Velocity-write mirror. derive_velocities and apply_velocity_impulse ALSO
+         write block VELOCITY (cols 3,4) / SPIN (col 6) when block + idx given (the
+         deferred half of B4b). solve_velocities threads state.block + c.idx_a/idx_b;
+         derive_velocities threads state (uid -> row). With gather() still present
+         these writes are REDUNDANT (next gather re-mirrors) -- a velocity mirror
+         assert after solve_velocities is the proof they match the bodies bit-for-
+         bit. GATE: golden bit-exact.
+         DONE: 1054 pass / 1 skip, golden bit-exact, flake8 clean. assert_block_mirrors
+         extended to VELOCITY/SPIN (passes at all sites: post-gather, post-position,
+         post-velocity); derive + apply_velocity_impulse assign the SAME nv/av to body
+         and block (no recompute -> no FMA-rounding risk). test_position_pass_mirrors
+         now also asserts velocity bit-identical with/without state.
+    B5b. Integrate on the block. solver.integrate_block_state(block, gravity, dt)
+         reads block VEL/POS/ANGLE/SPIN, runs the same 3 batched ops, writes block
+         VEL/POS/ANGLE, and mirrors the rows onto the bodies (bit-identical to
+         integrate_block). solve_substep calls it instead of integrate_block when
+         state is given. gather() is KEPT here (now redundant -- integrate already
+         mirrored bodies == block). GATE: golden bit-exact.
+    B5c. Drop the top-of-substep state.gather(). The block is now maintained purely
+         by integrate (B5b) + the position scatter (B4b) + the velocity scatter
+         (B5a) -- no body->block refresh. Bodies stay == block via the per-write
+         mirror, asserted every substep (position after solve_positions, velocity
+         after solve_velocities). Golden staying bit-exact with NO gather is the real
+         cross-substep proof that the block is a faithful authoritative store.
+         GATE: golden bit-exact.
 
 B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
-    solve_group_substep keeps the State block authoritative for all N substeps;
-    scatter to bodies ONCE at frame end (for render/broad phase). In parallel.py
-    solve_intra_substep, apply_state/store_state move OUT of the per-substep body
-    and run ONCE per behavior entry/exit. GATE: golden bit-exact + settling; and
-    the transport METRIC — pack/store/apply us and patch send/recv us must drop
-    ~Nx (8 substeps -> 1). Report ms/frame for serial, batched, and BOC paths.
+    Migrate the block-READ surface (contact_velocity + relative_normal_velocity +
+    derive_velocities + snapshot_poses sourced from the block by row) so the solver
+    no longer needs the bodies' pose/velocity at all -- only their constants (mass,
+    inertia, radius, geometry). Then in parallel.py solve_intra_substep, apply_state
+    / store_state move OUT of the per-substep body and run ONCE per behavior entry/
+    exit (the block IS the cown's persistent state; scatter_results already reads it
+    back into the authoritative bodies). The serial path scatters to bodies ONCE at
+    frame end for render / broad phase. GATE: golden bit-exact + settling; and the
+    transport METRIC -- pack/store/apply us and patch send/recv us must drop ~Nx
+    (8 substeps -> 1). Report ms/frame for serial, batched, and BOC paths.
 
 ## Phase 2.5 — Worker shells (profile-gated, after B6)
 8. Workers hold patch-local block, not global pool; per-patch rows. If shells

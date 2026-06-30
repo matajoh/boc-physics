@@ -283,7 +283,7 @@ def test_random_pile_stays_finite_and_bounded(seed):
 
 
 def test_position_pass_mirrors_poses_onto_the_state_block():
-    """B4b: solve_positions scatters poses onto the block bit-for-bit; bodies stay identical."""
+    """B4b/B5a: the solver scatters pose AND velocity onto the block bit-for-bit; bodies stay identical."""
     def build_pile():
         floor = make_static_box(0, 10)
         boxes = []
@@ -309,6 +309,9 @@ def test_position_pass_mirrors_poses_onto_the_state_block():
         assert cand.position.x == ref.position.x
         assert cand.position.y == ref.position.y
         assert cand.angle == ref.angle
+        assert cand.linear_velocity.x == ref.linear_velocity.x
+        assert cand.linear_velocity.y == ref.linear_velocity.y
+        assert cand.angular_velocity == ref.angular_velocity
     transport.assert_block_mirrors(cand_state.block, cand_state.row_of, cand_boxes)
 
 

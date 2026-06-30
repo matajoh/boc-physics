@@ -100,6 +100,9 @@ def assert_block_mirrors(block: Matrix, row_of: dict, bodies: List[RigidBody]):
         assert block[row, POSITION.start] == body.position.x
         assert block[row, POSITION.start + 1] == body.position.y
         assert block[row, ANGLE] == body.angle
+        assert block[row, VELOCITY.start] == body.linear_velocity.x
+        assert block[row, VELOCITY.start + 1] == body.linear_velocity.y
+        assert block[row, SPIN] == body.angular_velocity
 
 
 def block_center(body: RigidBody, state: Optional["State"]) -> Matrix:
