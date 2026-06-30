@@ -195,14 +195,32 @@ class GeometryPool:
         self.sync()
 
     def sync(self):
-        """Rotate+translate the base block into world pose, one batched pass."""
-        rows = len(self.polys)
+        """Refresh world pose from the polygons' current scalar transforms."""
         for i, p in enumerate(self.polys):
             self.cos[i] = math.cos(p.angle)
             self.sin[i] = math.sin(p.angle)
             self.px[i] = p.position.x
             self.py[i] = p.position.y
+        self._apply_pose()
 
+    def sync_from(self, px, py, angle):
+        """Refresh world pose from packed pose columns instead of scalar bodies.
+
+        Description:
+            px, py, and angle are per-row sequences in self.polys order. cos and
+            sin are taken per element with math so the rotation is bit-for-bit
+            identical to the body-sourced sync; only the pose SOURCE differs.
+        """
+        for i in range(len(self.polys)):
+            self.cos[i] = math.cos(angle[i])
+            self.sin[i] = math.sin(angle[i])
+            self.px[i] = px[i]
+            self.py[i] = py[i]
+        self._apply_pose()
+
+    def _apply_pose(self):
+        """Rotate+translate the base block into world pose, one batched pass."""
+        rows = len(self.polys)
         cos = Matrix(rows, 1, self.cos)
         sin = Matrix(rows, 1, self.sin)
         px = Matrix(rows, 1, self.px)
