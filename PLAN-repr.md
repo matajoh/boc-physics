@@ -115,12 +115,70 @@ B2. One canonical row space (geometry ON State, statics get rows). DONE (revised
     spaces (State.row_of dyn, GeometryPool.row_of polys) are bridged by uid, not
     merged — accepted (uid dict lookup is cheap vs the matrix ops).
 
-B3. Pool-source build_contacts' remaining scalar reads.
-    Feed GeometryPool.sync_from() from the State block (dyn) + static table (B2).
-    Replace the broad-phase a.aabb.disjoint with an aabb derived from pool columns
-    (or precomputed per frame), the circle detect_collision pose reads, and the
-    circle find_contact_points `c - a.position` with pool-column reads. After B3,
-    build_contacts reads NO scalar body pose. GATE: golden bit-exact + settling.
+B3. Pool-source build_contacts' remaining scalar reads. (EXPANDED — 5 substeps.)
+    Goal: after B3, build_contacts reads NO scalar body pose. This is the first
+    STRUCTURALLY INVASIVE step (B1/B2 were additive scaffolding). build_contacts is
+    the SHARED narrow phase: serial xpbd.solve_substep, colour xpbd_kernel.solve_substep
+    (line ~220), AND BOC parallel.solve_intra_substep (line ~164) all call it, so EVERY
+    B3 substep gates serial=golden bit-exact AND colour/BOC=settling-band.
+
+    Scalar body-pose reads left in build_contacts today (the B3 hit list):
+      (1) broad phase: `a.aabb.disjoint(b.aabb)` — aabb reads body pose (circle
+          position.x/.y +/- radius; polygon over transformed_vertices).
+      (2) GeometryPool(polys) ctor still body-sources pose via sync().
+      (3) circle SAT: batched_circle_circle / batched_circle_polygon read
+          a.position.x/.y (collisions.py); intersect_* read circle.position.
+      (4) circle find_contact_points: `a.position + normal*radius`, `c - a.position`.
+      (5) batched_contact_points: pos_a[i]=a.position, pos_b[i]=b.position lever arms
+          (contacts.py ~104/106); and the serial circle branch `c - a.position`,
+          `c - b.position` lever arms in build_contacts itself.
+
+    WHERE THE BLOCK ENTERS (the key wiring decision): the serial path has NO State
+    block in scope. Per the write-through MIRROR strategy, pack a fresh State block
+    from bodies AFTER integrate_block (build_contacts runs at the NEW pose), before
+    build_contacts, and thread it in as a new param. In B3 the block still MIRRORS
+    bodies (body-authoritative); B5 moves integrate onto the block so the per-substep
+    pack disappears. A POSE SOURCE covers statics: dynamics (incl. dynamic circles)
+    resolve via state.row_of -> block POSITION cols; statics (absent from the dyn
+    block) resolve via a per-frame static pose table keyed by uid (poly poses already
+    on the GeometryPool from B2; add a static-CIRCLE pose table). Helper
+    `pose_of(uid)` -> (x, y) hides the dyn/static split so call sites read one way.
+
+    B3a. Thread a State block through the substep into build_contacts (no behavior
+         change). DONE. build_contacts gained `state=None`; when given it calls
+         transport.assert_block_mirrors(block, row_of, eligible bodies) (exact
+         float compare, statics skipped) as the bridge safety net. Helper +
+         fuzz tests (30 seeds pass, 1 divergence raises) added. 990 pass, golden
+         bit-exact, flake8 clean. FINDING (defers part of the plan): State is
+         uid-keyed but solve_substep is called in micro-tests with uid-less bodies
+         (production bodies always carry a scene uid). So LIVE State construction
+         does NOT belong inside solve_substep — it must be owned where uids exist.
+         The state param is in place but unfed by the live path until B3b builds
+         and threads the State from the right level (engine/solve_group_substep).
+    B3b. Pool pose from the block. After `geom = GeometryPool(polys)`, call
+         geom.sync_from_block(state.block, state.row_of) (B2 method) so poly pose
+         comes from the block; statics keep rebuild pose. GATE: golden bit-exact.
+    B3c. Broad-phase AABB off the pool/block, not a.aabb. Build a per-frame aabb
+         table: polys = min/max over pool geom_x/geom_y real-count rows; circles =
+         pose_of(uid) +/- radius. Replace `a.aabb.disjoint(b.aabb)` with the table.
+         RISK: must be bit-IDENTICAL to body aabb so the eligible set is unchanged
+         (same float bounds -> same disjoint booleans); verify min/max op order
+         matches bodies.py. GATE: golden bit-exact + a fuzz asserting eligible set
+         equality vs the old aabb path.
+    B3d. Circle SAT pose from the block. batched_circle_circle /
+         batched_circle_polygon (and the intersect_* they wrap) take circle pose
+         from pose_of(uid) instead of a.position.x/.y; radius stays a body constant.
+         GATE: golden bit-exact + settling.
+    B3e. Lever arms off the block. circle find_contact_points uses pose_of(uid) for
+         `position + normal*radius`; build_contacts' circle-branch lever arms and
+         batched_contact_points pos_a/pos_b read pose_of(uid). After B3e,
+         build_contacts touches NO body.position/.angle. GATE: golden bit-exact +
+         settling; grep build_contacts + contacts.py for `.position`/`.angle` == 0
+         scalar pose reads (radius/mass constants excepted).
+
+    OPEN for B3: confirm dynamic-circle rows resolve in state.row_of (circles carry
+    pose in block cols 1,2 but have NO geometry row — they must still get a State
+    row); decide static-circle pose-table ownership (frame-level vs GeometryPool).
 
 B4. Row-index the constraints; solver writes the pool.
     ContactConstraint carries pool row indices (idx_a, idx_b) alongside the body

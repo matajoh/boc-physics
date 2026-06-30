@@ -82,6 +82,26 @@ def uids_of(block: Matrix) -> List[int]:
     return [int(block[i, UID]) for i in range(block.rows)]
 
 
+def assert_block_mirrors(block: Matrix, row_of: dict, bodies: List[RigidBody]):
+    """Bridge safety net: assert every dynamic body's block row equals its scalar pose.
+
+    Description:
+        The B-bridge keeps the scalar bodies as a write-through mirror of the
+        State block while readers move onto the block one at a time. This guard
+        catches a column-layout or row-order mismatch the instant a reader
+        starts trusting the block. The block stores body.position.x/.y and
+        body.angle as exact float64 copies, so the comparison is exact. Bodies
+        with no row (statics) are skipped; the mirror is removed at B6.
+    """
+    for body in bodies:
+        row = row_of.get(body.uid)
+        if row is None:
+            continue
+        assert block[row, POSITION.start] == body.position.x
+        assert block[row, POSITION.start + 1] == body.position.y
+        assert block[row, ANGLE] == body.angle
+
+
 def pack_pairs(pairs: List[Tuple[int, int]]) -> Optional[Matrix]:
     """Pack interior uid pairs into an (M x 2) block, or None when there are none.
 

@@ -220,3 +220,35 @@ def test_geometry_pool_excludes_circles():
     bodies[0].uid = 0
     pool = transport.GeometryPool(bodies)
     assert bodies[0].uid not in pool.row_of
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_assert_block_mirrors_passes_for_packed_block(seed):
+    """A block freshly packed from bodies mirrors them, so the guard never fires."""
+    rng = random.Random(seed)
+    bodies = [build_body(s) for s in random_states(rng, rng.randint(2, 10))]
+    for i, body in enumerate(bodies):
+        body.uid = i
+    for body in bodies:
+        if rng.random() < 0.3:
+            body.physics = False
+
+    state = transport.State(bodies)
+    if state.block is None:
+        pytest.skip("no dynamic bodies in this draw")
+
+    transport.assert_block_mirrors(state.block, state.row_of, bodies)
+
+
+def test_assert_block_mirrors_catches_divergence():
+    """Perturbing one block row trips the mirror guard."""
+    rng = random.Random(0)
+    bodies = [build_body(s) for s in random_states(rng, 6)]
+    for i, body in enumerate(bodies):
+        body.uid = i
+        body.physics = True
+
+    state = transport.State(bodies)
+    state.block[0, transport.POSITION.start] += 1.0
+    with pytest.raises(AssertionError):
+        transport.assert_block_mirrors(state.block, state.row_of, bodies)

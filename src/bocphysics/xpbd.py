@@ -109,7 +109,8 @@ def _batch_circle_collisions(pairs, geom):
 
 
 def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
-                   contacts: ContactSet = None) -> List[ContactConstraint]:
+                   contacts: ContactSet = None,
+                   state: Optional["transport.State"] = None) -> List[ContactConstraint]:
     """Re-evaluate the narrow phase at the current pose; one constraint per penetrating contact point.
 
     Description:
@@ -123,10 +124,15 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
         Pairs whose AABBs are disjoint are rejected before the full SAT; the box
         test is conservative (it never rejects a real overlap), so the emitted
         constraint set is identical to running detect_collision on every pair.
+        When state is given (the B-bridge mirror), the block pose is asserted to
+        equal the scalar bodies before any reader trusts it.
     """
     constraints = []
     eligible = [(a, b) for a, b in pairs
                 if (a.physics or b.physics) and not a.aabb.disjoint(b.aabb)]
+    if state is not None:
+        transport.assert_block_mirrors(state.block, state.row_of,
+                                       [body for pair in eligible for body in pair])
     polys = list({p.uid: p for a, b in eligible for p in (a, b)
                   if isinstance(p, Polygon)}.values())
     geom = transport.GeometryPool(polys)
