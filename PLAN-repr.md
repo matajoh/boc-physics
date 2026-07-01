@@ -341,6 +341,9 @@ B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
          [row, ANGLE] per body; else the scalar body read. derive_velocities reads
          the CURRENT pose from block[row, POSITION]/[row, ANGLE] (not body.position)
          when state given. GATE: serial golden bit-exact.
+         DONE: 1054 pass / 1 skip, serial golden bit-exact, flake8 clean. Both read scalar
+         cells block[row, POSITION.start/+1] / [row, ANGLE]; None-row bodies fall back to the
+         scalar body read; solve_substep passes state into the snapshot call.
     B6c. Write side computes from block reads. apply_positional_impulse and
          apply_velocity_impulse derive their block deltas/results from the block's
          CURRENT row values (block[idx, POSITION]/[ANGLE]/[VELOCITY]/[SPIN]), not the

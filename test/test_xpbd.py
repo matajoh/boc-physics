@@ -140,12 +140,13 @@ def test_solve_positions_returns_one_lambda_per_constraint_and_separates():
 
 
 def test_snapshot_poses_is_alias_safe():
-    """A snapshot stores scalars, so moving the body afterwards never mutates it."""
+    """A snapshot copies the pose, so moving the body afterwards never mutates it."""
     body = make_circle(1, 2)
     snapshot = xpbd.snapshot_poses([body])
     body.move(Matrix.vector([10, 10]))
     body.rotate_to(0.5)
-    assert snapshot == [(1.0, 2.0, 0.0)]
+    (pos, angle), = snapshot
+    assert (pos[0, 0], pos[0, 1], angle) == (1.0, 2.0, 0.0)
 
 
 def test_derive_velocities_from_pose_delta():

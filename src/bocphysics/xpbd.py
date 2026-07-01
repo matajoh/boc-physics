@@ -260,23 +260,36 @@ def solve_positions(constraints: List[ContactConstraint],
     return lambdas
 
 
-def snapshot_poses(bodies: List[RigidBody]) -> List[Tuple[float, float, float]]:
-    """Record each body's pose as scalar (x, y, angle) so derive_velocities reads no aliased Matrix."""
-    return [(body.position.x, body.position.y, body.angle) for body in bodies]
+def snapshot_poses(bodies: List[RigidBody],
+                   state: Optional["transport.State"] = None) -> List[Tuple[Matrix, float]]:
+    """Record each body's pose as (position copy, angle) so derive_velocities reads no aliased Matrix."""
+    if state is None:
+        return [(body.position.copy(), body.angle) for body in bodies]
+    poses = []
+    for body in bodies:
+        row = state.row_of.get(body.uid)
+        if row is None:
+            poses.append((body.position.copy(), body.angle))
+        else:
+            poses.append((state.block[row, transport.POSITION], state.block[row, transport.ANGLE]))
+    return poses
 
 
 def derive_velocities(bodies: List[RigidBody],
-                      previous: List[Tuple[float, float, float]], h: float,
+                      previous: List[Tuple[Matrix, float]], h: float,
                       state: Optional["transport.State"] = None):
     """Set each body's velocity from its position delta over the sub-step (the XPBD velocity update)."""
-    for body, (px, py, pa) in zip(bodies, previous):
-        body.linear_velocity = Matrix.vector([(body.position.x - px) / h, (body.position.y - py) / h])
-        body.angular_velocity = (body.angle - pa) / h
-        if state is not None:
-            row = state.row_of.get(body.uid)
-            if row is not None:
-                state.block[row, transport.VELOCITY] = body.linear_velocity
-                state.block[row, transport.SPIN] = body.angular_velocity
+    for body, (prev_pos, pa) in zip(bodies, previous):
+        row = state.row_of.get(body.uid) if state is not None else None
+        if row is None:
+            cur_pos, cur_angle = body.position, body.angle
+        else:
+            cur_pos, cur_angle = state.block[row, transport.POSITION], state.block[row, transport.ANGLE]
+        body.linear_velocity = (cur_pos - prev_pos) / h
+        body.angular_velocity = (cur_angle - pa) / h
+        if row is not None:
+            state.block[row, transport.VELOCITY] = body.linear_velocity
+            state.block[row, transport.SPIN] = body.angular_velocity
 
 
 def apply_velocity_impulse(a: RigidBody, b: RigidBody, r_a: Matrix,
@@ -338,7 +351,7 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
                   sub_dt: float, contacts: ContactSet = None,
                   state: Optional["transport.State"] = None):
     """Advance the dynamic bodies one XPBD sub-step: integrate, solve positions, derive, solve velocities."""
-    previous = snapshot_poses(bodies)
+    previous = snapshot_poses(bodies, state)
     if state is not None and state.block is not None:
         integrate_block_state(state.block, state.bodies, gravity, sub_dt)
     else:
