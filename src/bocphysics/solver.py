@@ -85,4 +85,5 @@ def integrate_block_state(block, bodies: List[RigidBody], gravity, dt: float):
         body.linear_velocity = velocity[i]
         body.position = position[i]
         body.angle = angle[i, 0]
+        body.angular_velocity = spin[i, 0]
         body.update_needed_ = True

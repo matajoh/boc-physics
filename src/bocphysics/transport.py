@@ -157,6 +157,22 @@ class State:
         """Build the pool and row map from the dynamic bodies in order."""
         self.rebuild(bodies)
 
+    @classmethod
+    def over(cls, block: Matrix, bodies: List[RigidBody], uids: List[int]) -> "State":
+        """Wrap an existing block as authoritative state without repacking.
+
+        Description:
+            The parallel path already owns the patch block in a cown and holds its
+            shell bodies; this views them as a State so the solver reads and writes
+            the block in place, with no per-sub-step body<->block marshalling. uids
+            is the block's row order (its uid column); bodies must match that order.
+        """
+        self = cls.__new__(cls)
+        self.block = block
+        self.bodies = bodies
+        self.row_of = {uid: i for i, uid in enumerate(uids)}
+        return self
+
     def rebuild(self, bodies: List[RigidBody]):
         """Reseed pool and row_of after a body-set change; statics excluded."""
         self.bodies = [b for b in bodies if b.physics]

@@ -95,12 +95,13 @@ def solve_intra_substep(state, pairs_block):
         so the block is the single source of truth for which bodies this patch
         owns. The interior pairs ride in their own cown as an (M x 2) uid block
         (or None when the patch has no interior pairs), reused across every
-        sub-step. Reapplies the latest state first so any boundary edits made
-        between sub-steps are picked up, then runs one XPBD sub-step over the
-        interior and dynamic-static pairs (integrate, solve positions, derive
-        velocities, solve velocities). The XPBD x_prev snapshot lives inside
-        solve_substep, so it is local to this behavior -- no state-block column
-        crosses the seam. The new state is written back for the next behavior.
+        sub-step. The block is the authoritative state: the solver reads and
+        writes it in place through a State view, so boundary edits stored on the
+        block between sub-steps are picked up with no per-sub-step body<->block
+        marshalling. One XPBD sub-step runs over the interior and dynamic-static
+        pairs (integrate, solve positions, derive velocities, solve velocities).
+        The XPBD x_prev snapshot lives inside solve_substep, so it is local to
+        this behavior -- no state-block column crosses the seam.
     """
     geom = notice_read(GEOMETRY_KEY, {})
     shell_cache.evict_retired(geom, notice_read(GEOMETRY_VERSION_KEY, 0))
@@ -109,13 +110,11 @@ def solve_intra_substep(state, pairs_block):
     interior_uid_pairs = transport.unpack_pairs(pairs_block)
     dyn_uids = transport.uids_of(block)
     dyn_shells, by_uid = shells_by_uid(geom, dyn_uids, interior_uid_pairs)
-    transport.apply_state(dyn_shells, block)
+    patch_state = transport.State.over(block, dyn_shells, dyn_uids)
 
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_uid_pairs]
     xpbd.solve_substep(config.physics, dyn_shells, pairs, config.gravity,
-                       config.sub_dt)
-
-    transport.store_state(dyn_shells, block)
+                       config.sub_dt, state=patch_state)
 
 
 def schedule_intra(state_cown, pairs_cown):

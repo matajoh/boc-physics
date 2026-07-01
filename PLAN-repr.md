@@ -371,6 +371,17 @@ B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
          still bit-exact. Report the transport METRIC: per-substep apply_state/
          store_state us -> 0 in intra (2*num_substeps marshal ops/patch/frame removed);
          ms/frame for serial, batched, and BOC paths.
+         DONE. transport.State.over added (bypasses __init__/pack_state via __new__).
+         solve_intra_substep now builds State.over(block, dyn_shells, dyn_uids) and
+         calls solve_substep(..., state=patch_state); apply_state + store_state removed
+         from intra. ROOT-CAUSE FIX: integrate_block_state mirrored pos/vel/angle onto
+         the shell but NOT angular_velocity -- apply_state used to seed the shell's
+         spin, so removing it left a stale shell spin that failed assert_block_mirrors
+         in build_contacts (behavior raised, block never updated). Added
+         body.angular_velocity = spin[i, 0] to the mirror loop; bit-exact no-op in the
+         serial path (block SPIN == body.angular_velocity on entry), seeds the shell in
+         the block-authoritative worker path. GATE MET: 1054 pass / 1 skip, flake8 rc=0,
+         serial golden + worker bit-exact parity + settling band + determinism all green.
     B6e (optional, profile-gated). Drop the vestigial shell writes in the block path
          (guard body writes on state is None) and migrate solve_boundary_substep the
          same way if the seam marshal shows up in the profile.
