@@ -298,17 +298,19 @@ def apply_velocity_impulse(a: RigidBody, b: RigidBody, r_a: Matrix,
     """Apply a velocity impulse at the contact: a gets -impulse, b gets +impulse (mass-weighted)."""
     vel, spin = transport.VELOCITY, transport.SPIN
     if a.physics:
+        dw_a = r_a.cross(impulse) * a.inv_inertia
         a.linear_velocity = a.linear_velocity.scaled_add(-a.inv_mass, impulse)
-        a.angular_velocity -= r_a.cross(impulse) * a.inv_inertia
+        a.angular_velocity -= dw_a
         if block is not None and idx_a is not None:
-            block[idx_a, vel] = a.linear_velocity
-            block[idx_a, spin] = a.angular_velocity
+            block[idx_a, vel] = block[idx_a, vel].scaled_add(-a.inv_mass, impulse)
+            block[idx_a, spin] = block[idx_a, spin] - dw_a
     if b.physics:
+        dw_b = r_b.cross(impulse) * b.inv_inertia
         b.linear_velocity = b.linear_velocity.scaled_add(b.inv_mass, impulse)
-        b.angular_velocity += r_b.cross(impulse) * b.inv_inertia
+        b.angular_velocity += dw_b
         if block is not None and idx_b is not None:
-            block[idx_b, vel] = b.linear_velocity
-            block[idx_b, spin] = b.angular_velocity
+            block[idx_b, vel] = block[idx_b, vel].scaled_add(b.inv_mass, impulse)
+            block[idx_b, spin] = block[idx_b, spin] + dw_b
 
 
 def solve_velocities(physics: Physics, constraints: List[ContactConstraint],

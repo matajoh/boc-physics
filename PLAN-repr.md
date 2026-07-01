@@ -351,6 +351,12 @@ B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
          updated (serial authoritative). FMA-sensitive: the block velocity write must
          reuse the SAME scaled_add form on the block's own velocity; in serial block
          == body so bit-exact. GATE: serial golden bit-exact (verify velocity ULP).
+         DONE: 1054 pass / 1 skip, serial golden bit-exact, flake8 clean. Only
+         apply_velocity_impulse changed: block[idx, vel] = block[idx, vel].scaled_add(...),
+         block[idx, spin] -/+ dw (dw hoisted, reused for body). apply_positional_impulse
+         UNCHANGED -- its block writes were already relative deltas (+= da, -= spin_a from
+         impulse + constants, pose-independent). scaled_add is two-round (not FMA) and the
+         body uses the same form, so block == body stays bit-exact.
     B6d. Parallel rewire (THE WIN). Add a lightweight State wrapper over an EXISTING
          block (no repack) -- e.g. transport.State.over(block, shells, uids) setting
          block/bodies/row_of directly. In solve_intra_substep: build the wrapper from
