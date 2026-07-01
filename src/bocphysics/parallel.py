@@ -11,10 +11,12 @@ Description:
     order, which is how successive sub-steps stay ordered without any barrier.
 """
 
+import time
+from functools import partial
 from typing import List, NamedTuple, Tuple, Union
 
-from bocpy import (Cown, Matrix, notice_read, notice_seed, PinnedCown, start,
-                   when)
+from bocpy import (Cown, Matrix, notice_read, notice_seed, notice_update,
+                   PinnedCown, start, when)
 
 from . import geometry, solver, transport, xpbd
 from .patches import build_partition, build_slab_partition
@@ -24,11 +26,27 @@ GEOMETRY_KEY = "geometry"
 GEOMETRY_VERSION_KEY = "geometry_version"
 CONFIG_KEY = "config"
 
+INTRA_TIMING_KEY = "prof_intra"
+SEAM_TIMING_KEY = "prof_seam"
+
 DEFAULT_SLABS = 12
 
 MIN_SLAB_BODIES = 6
 
 shell_cache = geometry.ShellCache()
+
+
+def fold_timing(current, sample):
+    """Fold one behavior's elapsed sample into a (count, total, max) tuple.
+
+    Description:
+        Runs on the single-threaded noticeboard mutator via notice_update, so it
+        must stay a pure, picklable, module-level function. Each worker calls it
+        once per behavior; the tuple aggregates every worker's samples for a
+        behavior class across the whole frame with no per-behavior key.
+    """
+    count, total, peak = current
+    return (count + 1, total + sample, max(peak, sample))
 
 
 class SolveConfig(NamedTuple):
@@ -44,6 +62,7 @@ class SolveConfig(NamedTuple):
     gravity: Matrix
     sub_dt: float
     batched: bool
+    profile: bool = False
 
 
 def shells_by_uid(geom, dyn_uids: List[int],
@@ -83,9 +102,10 @@ def solve_intra_substep(state, pairs_block):
         The XPBD x_prev snapshot lives inside solve_substep, so it is local to
         this behavior -- no state-block column crosses the seam.
     """
+    config = notice_read(CONFIG_KEY)
+    t0 = time.perf_counter() if config.profile else 0.0
     geom = notice_read(GEOMETRY_KEY, {})
     shell_cache.evict_retired(geom, notice_read(GEOMETRY_VERSION_KEY, 0))
-    config = notice_read(CONFIG_KEY)
     block = state.value
     interior_uid_pairs = transport.unpack_pairs(pairs_block)
     dyn_uids = transport.uids_of(block)
@@ -95,6 +115,9 @@ def solve_intra_substep(state, pairs_block):
     pairs = [(by_uid[ua], by_uid[ub]) for ua, ub in interior_uid_pairs]
     xpbd.solve_substep(config.physics, dyn_shells, pairs, config.gravity,
                        config.sub_dt, state=patch_state)
+    if config.profile:
+        notice_update(INTRA_TIMING_KEY, partial(fold_timing,
+                      sample=time.perf_counter() - t0), default=(0, 0.0, 0.0))
 
 
 def schedule_intra(state_cown, pairs_cown):
@@ -125,9 +148,10 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
         residual is bounded by the S5.2 invariants and locked as a tolerance
         band by test_parallel.test_seam_decomposition_* (recaptured in S5).
     """
+    config = notice_read(CONFIG_KEY)
+    t0 = time.perf_counter() if config.profile else 0.0
     geom = notice_read(GEOMETRY_KEY, {})
     shell_cache.evict_retired(geom, notice_read(GEOMETRY_VERSION_KEY, 0))
-    config = notice_read(CONFIG_KEY)
     block_a = state_a.value
     block_b = state_b.value
     boundary_uid_pairs = transport.unpack_pairs(pairs_block)
@@ -147,6 +171,9 @@ def solve_boundary_substep(state_a, state_b, pairs_block):
 
     transport.store_state(shells_a, block_a)
     transport.store_state(shells_b, block_b)
+    if config.profile:
+        notice_update(SEAM_TIMING_KEY, partial(fold_timing,
+                      sample=time.perf_counter() - t0), default=(0, 0.0, 0.0))
 
 
 def schedule_boundary(state_a_cown, state_b_cown, pairs_cown):
@@ -282,6 +309,7 @@ class ParallelStepper:
         self.engine_pinned = None
         self.geometry_version = None
         self.geometry_epoch = 0
+        self.profile = False
 
     def begin(self, worker_count=None, dt: float = 1 / 60):
         """Start the runtime, pin the engine, and seed the set-once solve config."""
@@ -290,7 +318,7 @@ class ParallelStepper:
         self.engine_pinned = PinnedCown(self.engine)
         sub_dt = dt / self.engine.num_substeps
         config = SolveConfig(self.engine.physics, self.engine.gravity, sub_dt,
-                             solver.use_batched_solver)
+                             solver.use_batched_solver, self.profile)
         notice_seed(CONFIG_KEY, config)
 
     def seed_geometry(self):
