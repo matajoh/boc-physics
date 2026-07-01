@@ -25,6 +25,9 @@ ANGLE = 5
 SPIN = 6
 WIDTH = 7
 
+# Debug guard for the block<->body mirror; off in the hot path, flip on to audit the invariant.
+CHECK_MIRRORS = False
+
 
 def pack_state(bodies: List[RigidBody]) -> Matrix:
     """Gather the dynamic bodies' uid and mutable state into one (N x 7) block."""

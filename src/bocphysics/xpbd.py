@@ -163,7 +163,7 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
     boxes = {bid: _broad_box(body, state) for bid, body in unique.items()}
     eligible = [(a, b) for a, b in candidates
                 if not boxes[id(a)].disjoint(boxes[id(b)])]
-    if state is not None:
+    if state is not None and transport.CHECK_MIRRORS:
         transport.assert_block_mirrors(state.block, state.row_of,
                                        [body for pair in eligible for body in pair])
     polys = list({p.uid: p for a, b in eligible for p in (a, b)
@@ -360,12 +360,12 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
         integrate_block(bodies, gravity, sub_dt)
     constraints = build_contacts(pairs, contacts, state)
     lambdas = solve_positions(constraints, state.block if state is not None else None)
-    if state is not None:
+    if state is not None and transport.CHECK_MIRRORS:
         transport.assert_block_mirrors(state.block, state.row_of, bodies)
     derive_velocities(bodies, previous, sub_dt, state)
     solve_velocities(physics, constraints, lambdas, sub_dt, gravity,
                      state.block if state is not None else None)
-    if state is not None:
+    if state is not None and transport.CHECK_MIRRORS:
         transport.assert_block_mirrors(state.block, state.row_of, bodies)
 
 

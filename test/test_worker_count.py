@@ -127,8 +127,8 @@ def test_slab_solve_is_worker_count_independent_and_reproducible():
         the slab cut changes which contacts become seams but not the schedule's
         determinism, since the partition is a pure function of the scene built on
         main before any fan-out. It pins DEFAULT_SLABS, a fixed reference count,
-        so both worker counts cut the identical partition; the shipped AUTO_SLABS
-        default scales with the worker count and is covered separately.
+        so both worker counts cut the identical partition; the shipped default is
+        that same fixed count, so the cut is worker-count independent.
     """
     one = settle_snapshot(SEEDS[0], 1, num_slabs=parallel.DEFAULT_SLABS)
     four = settle_snapshot(SEEDS[0], 4, num_slabs=parallel.DEFAULT_SLABS)

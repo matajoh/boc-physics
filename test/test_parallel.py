@@ -435,13 +435,10 @@ def test_slab_count_below_one_is_rejected(num_slabs):
 
 
 def test_default_partition_is_slabs():
-    """The default partition is the worker-scaled slab cut, never the quadtree."""
+    """The default partition is the fixed slab cut, never the quadtree."""
     engine = PhysicsEngine(1200, 900,
                            DetectionKind.LOOSE_QUADTREE, show_contacts=False)
-    assert parallel.ParallelStepper(engine).num_slabs == parallel.AUTO_SLABS
-    assert parallel.resolve_slab_count(parallel.AUTO_SLABS, 4) == 10
-    assert parallel.resolve_slab_count(parallel.AUTO_SLABS, 8) == 20
-    assert parallel.resolve_slab_count(None, 8) is None
+    assert parallel.ParallelStepper(engine).num_slabs == parallel.DEFAULT_SLABS
     assert parallel.DEFAULT_SLABS >= 1
 
 
@@ -839,31 +836,6 @@ class TestSettle:
         ref_top = min(body.position.y for body in reference)
         par_top = min(body.position.y for body in fanned)
         assert par_top == pytest.approx(ref_top, abs=2.0)
-
-    def test_begin_resolves_and_preserves_auto_request(self):
-        """begin() turns the AUTO_SLABS sentinel into a concrete worker-scaled int.
-
-        Description:
-            The default request stays the AUTO_SLABS string until begin(), which
-            resolves it against the worker count. The original request is kept on
-            _slab_request so a later begin() re-resolves from the sentinel rather
-            than locking in the first concrete count -- the reason _slab_request
-            exists at all.
-        """
-        engine = PhysicsEngine(1200, 900,
-                               DetectionKind.LOOSE_QUADTREE, show_contacts=False)
-        stepper = parallel.ParallelStepper(engine)
-        assert stepper.num_slabs == parallel.AUTO_SLABS
-
-        stepper.begin()
-        expected = parallel.resolve_slab_count(parallel.AUTO_SLABS, None)
-        assert isinstance(stepper.num_slabs, int)
-        assert stepper.num_slabs == expected
-        assert stepper._slab_request == parallel.AUTO_SLABS
-
-        stepper.begin()
-        assert stepper.num_slabs == expected
-        assert stepper._slab_request == parallel.AUTO_SLABS
 
     @pytest.mark.parametrize("num_substeps", SETTLE_SUBSTEPS)
     @pytest.mark.parametrize("seed", SETTLE_SEEDS)
