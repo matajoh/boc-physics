@@ -334,7 +334,6 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
     previous = snapshot_poses(bodies)
     if state is not None and state.block is not None:
         integrate_block_state(state.block, state.bodies, gravity, sub_dt)
-        state.gather()
     else:
         integrate_block(bodies, gravity, sub_dt)
     constraints = build_contacts(pairs, contacts, state)

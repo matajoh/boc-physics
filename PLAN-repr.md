@@ -310,6 +310,10 @@ B5. Integrate writes the State block; drop the gather (block becomes load-bearin
          after solve_velocities). Golden staying bit-exact with NO gather is the real
          cross-substep proof that the block is a faithful authoritative store.
          GATE: golden bit-exact.
+         DONE: 1054 pass / 1 skip, golden bit-exact, flake8 clean. Cross-substep proof
+         holds: block carries VEL/POS/ANGLE/SPIN across substeps purely via mirror
+         writes. State.gather() is now ORPHANED (no callers) but KEPT -- symmetric with
+         scatter() (used by test_transport) and a valid State op; remove decision deferred.
 
 B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
     Migrate the block-READ surface (contact_velocity + relative_normal_velocity +
