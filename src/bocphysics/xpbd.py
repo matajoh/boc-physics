@@ -27,7 +27,7 @@ from .collisions import (batched_circle_circle, batched_circle_polygon,
                          batched_polygon_polygon, detect_collision)
 from .contacts import batched_contact_points, find_contact_points
 from .physics import Physics
-from .solver import integrate_block
+from .solver import integrate_block, integrate_block_state
 
 ContactSet = Optional[Set[Tuple[float, float]]]
 
@@ -332,9 +332,11 @@ def solve_substep(physics: Physics, bodies: List[RigidBody],
                   state: Optional["transport.State"] = None):
     """Advance the dynamic bodies one XPBD sub-step: integrate, solve positions, derive, solve velocities."""
     previous = snapshot_poses(bodies)
-    integrate_block(bodies, gravity, sub_dt)
-    if state is not None:
+    if state is not None and state.block is not None:
+        integrate_block_state(state.block, state.bodies, gravity, sub_dt)
         state.gather()
+    else:
+        integrate_block(bodies, gravity, sub_dt)
     constraints = build_contacts(pairs, contacts, state)
     lambdas = solve_positions(constraints, state.block if state is not None else None)
     if state is not None:

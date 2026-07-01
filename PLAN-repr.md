@@ -298,6 +298,11 @@ B5. Integrate writes the State block; drop the gather (block becomes load-bearin
          integrate_block). solve_substep calls it instead of integrate_block when
          state is given. gather() is KEPT here (now redundant -- integrate already
          mirrored bodies == block). GATE: golden bit-exact.
+         DONE: 1054 pass / 1 skip, golden bit-exact, flake8 clean. integrate_block_state
+         reads block via 1-wide slices (ANGLE/SPIN); guarded on state.block is not None
+         so the all-static (block None) scene falls back to integrate_block(bodies).
+         The gravity step stays velocity += dt * gravity (gravity is a (1,2) broadcast
+         row, not a same-shape scaled_add x; two-round, bit-exact with .add(gravity*dt)).
     B5c. Drop the top-of-substep state.gather(). The block is now maintained purely
          by integrate (B5b) + the position scatter (B4b) + the velocity scatter
          (B5a) -- no body->block refresh. Bodies stay == block via the per-write
