@@ -316,16 +316,55 @@ B5. Integrate writes the State block; drop the gather (block becomes load-bearin
          scatter() (used by test_transport) and a valid State op; remove decision deferred.
 
 B6. Persist State across substeps; drop the per-substep mirror (THE WIN).
-    Migrate the block-READ surface (contact_velocity + relative_normal_velocity +
-    derive_velocities + snapshot_poses sourced from the block by row) so the solver
-    no longer needs the bodies' pose/velocity at all -- only their constants (mass,
-    inertia, radius, geometry). Then in parallel.py solve_intra_substep, apply_state
-    / store_state move OUT of the per-substep body and run ONCE per behavior entry/
-    exit (the block IS the cown's persistent state; scatter_results already reads it
-    back into the authoritative bodies). The serial path scatters to bodies ONCE at
-    frame end for render / broad phase. GATE: golden bit-exact + settling; and the
-    transport METRIC -- pack/store/apply us and patch send/recv us must drop ~Nx
-    (8 substeps -> 1). Report ms/frame for serial, batched, and BOC paths.
+    Migrate every pose/velocity READ and every block WRITE onto the block so the
+    solver needs only the bodies' CONSTANTS (inv_mass, inv_inertia, radius,
+    geometry). Each read/write migration stays golden bit-exact in SERIAL because
+    the body mirror still holds (block == body), so B6a-B6c are gated purely by the
+    serial golden and touch no parallel code. Only the final step (B6d) flips the
+    parallel path and is gated by the settling band + metrics. KEY INVARIANT: the
+    block writes must be computed from BLOCK reads (not body reads) so the block is
+    authoritative independent of the (soon-stale) shells; in serial block == body so
+    this stays bit-exact. Substeps:
+
+    B6a. contact_velocity reads block VELOCITY/SPIN. Add block/idx params (default
+         None); when given, lv = block[idx, VELOCITY] (1,2 slice), av = block[idx,
+         SPIN] scalar, return lv + av * r.perpendicular(); static still _ZERO_VELOCITY.
+         Thread block+idx through relative_normal_velocity (build_contacts passes
+         state.block + idx_a/idx_b, computed once per hit) and solve_velocities'
+         inner contact_velocity pair (already has block/idx_a/idx_b). GATE: serial
+         golden bit-exact (block == body so the read is identical).
+         DONE: 1054 pass / 1 skip, serial golden bit-exact, flake8 clean. contact_velocity
+         reads block[idx, VELOCITY] (1,2 slice) + block[idx, SPIN] (scalar) when block+idx
+         given; relative_normal_velocity + solve_velocities inner pair thread them.
+    B6b. snapshot_poses + derive_velocities read block POSE. snapshot_poses(bodies,
+         state=None): when state given, read (x, y, angle) from block[row, POSITION]/
+         [row, ANGLE] per body; else the scalar body read. derive_velocities reads
+         the CURRENT pose from block[row, POSITION]/[row, ANGLE] (not body.position)
+         when state given. GATE: serial golden bit-exact.
+    B6c. Write side computes from block reads. apply_positional_impulse and
+         apply_velocity_impulse derive their block deltas/results from the block's
+         CURRENT row values (block[idx, POSITION]/[ANGLE]/[VELOCITY]/[SPIN]), not the
+         body's, so the block no longer depends on shell pose. Bodies are still
+         updated (serial authoritative). FMA-sensitive: the block velocity write must
+         reuse the SAME scaled_add form on the block's own velocity; in serial block
+         == body so bit-exact. GATE: serial golden bit-exact (verify velocity ULP).
+    B6d. Parallel rewire (THE WIN). Add a lightweight State wrapper over an EXISTING
+         block (no repack) -- e.g. transport.State.over(block, shells, uids) setting
+         block/bodies/row_of directly. In solve_intra_substep: build the wrapper from
+         state.value + dyn_shells + dyn_uids, REMOVE apply_state and store_state, and
+         pass the wrapper into xpbd.solve_substep. The solver now reads/writes the
+         block in place; the vestigial shell writes are never read (all reads are
+         block-sourced after B6a-B6c) and never stored. solve_boundary_substep is
+         UNCHANGED -- it reseeds shells from the (authoritative) block via its own
+         apply_state and stores back, so it stays correct without the intra marshal.
+         scatter_results still apply_state(engine_bodies, block) for render/broad
+         phase. GATE: settling band (test_parallel) + determinism + serial golden
+         still bit-exact. Report the transport METRIC: per-substep apply_state/
+         store_state us -> 0 in intra (2*num_substeps marshal ops/patch/frame removed);
+         ms/frame for serial, batched, and BOC paths.
+    B6e (optional, profile-gated). Drop the vestigial shell writes in the block path
+         (guard body writes on state is None) and migrate solve_boundary_substep the
+         same way if the seam marshal shows up in the profile.
 
 ## Phase 2.5 — Worker shells (profile-gated, after B6)
 8. Workers hold patch-local block, not global pool; per-patch rows. If shells

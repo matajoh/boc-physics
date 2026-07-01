@@ -60,10 +60,13 @@ def generalized_inverse_mass(body: RigidBody, r: Matrix, direction: Matrix) -> f
     return body.inv_mass + rn * rn * body.inv_inertia
 
 
-def contact_velocity(body: RigidBody, r: Matrix) -> Matrix:
+def contact_velocity(body: RigidBody, r: Matrix, block: Optional[Matrix] = None,
+                     idx: Optional[int] = None) -> Matrix:
     """World velocity of the material point at anchor r: v + omega x r, zero for a static body."""
     if not body.physics:
         return _ZERO_VELOCITY
+    if block is not None and idx is not None:
+        return block[idx, transport.VELOCITY] + block[idx, transport.SPIN] * r.perpendicular()
     return body.linear_velocity + body.angular_velocity * r.perpendicular()
 
 
@@ -90,9 +93,11 @@ def _broad_box(body: RigidBody, state: Optional["transport.State"]) -> AABB:
 
 
 def relative_normal_velocity(a: RigidBody, b: RigidBody, r_a: Matrix,
-                             r_b: Matrix, normal: Matrix) -> float:
+                             r_b: Matrix, normal: Matrix, block: Optional[Matrix] = None,
+                             idx_a: Optional[int] = None, idx_b: Optional[int] = None) -> float:
     """Pre-solve relative velocity along the contact normal (b relative to a)."""
-    return (contact_velocity(b, r_b) - contact_velocity(a, r_a)).vecdot(normal)
+    return (contact_velocity(b, r_b, block, idx_b)
+            - contact_velocity(a, r_a, block, idx_a)).vecdot(normal)
 
 
 def _batch_circle_collisions(pairs, geom, state=None):
@@ -200,7 +205,9 @@ def build_contacts(pairs: List[Tuple[RigidBody, RigidBody]],
         for px, py, r_a, r_b in points:
             if contacts is not None:
                 contacts.add((px, py))
-            bias_velocity = relative_normal_velocity(a, b, r_a, r_b, normal)
+            bias_velocity = relative_normal_velocity(a, b, r_a, r_b, normal,
+                                                     state.block if state is not None else None,
+                                                     idx_a, idx_b)
             constraints.append(ContactConstraint(a, b, normal, r_a, r_b, collision.depth,
                                                  bias_velocity, idx_a, idx_b))
     return constraints
@@ -308,7 +315,7 @@ def solve_velocities(physics: Physics, constraints: List[ContactConstraint],
     g = gravity.magnitude()
     for constraint, lam_n in zip(constraints, lambdas):
         a, b, normal, r_a, r_b, _depth, bias_velocity, idx_a, idx_b = constraint
-        v = contact_velocity(b, r_b) - contact_velocity(a, r_a)
+        v = contact_velocity(b, r_b, block, idx_b) - contact_velocity(a, r_a, block, idx_a)
         vn = v.vecdot(normal)
         vt = v - normal * vn
         vt_mag = math.sqrt(vt.vecdot(vt))
