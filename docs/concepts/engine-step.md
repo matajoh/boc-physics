@@ -2,8 +2,8 @@
 
 {py:class}`~bocphysics.engine.PhysicsEngine` owns the list of rigid bodies and
 advances them one frame at a time. A frame is an *a posteriori* step: bodies are
-moved first, then any overlaps are detected and resolved with impulses. The
-whole frame is `PhysicsEngine.step(dt)`.
+moved first, then any overlaps are detected and resolved by a position-based
+(XPBD) solve. The whole frame is `PhysicsEngine.step(dt)`.
 
 ## Components decide a body's role
 
@@ -54,35 +54,35 @@ pass clean through a thin one within a single step. The engine mitigates this by
 subdividing `dt` into `num_substeps` smaller increments and resolving contacts
 at each one.
 
-The default substep solver (`solve_substep`) separates two costs that the
-naive solver conflates:
+Each sub-step (`solve_substep`) runs a single **XPBD** pass — there is no inner
+iteration count:
 
-- Each **sub-step** integrates the bodies once, then builds every pair's contact
-  manifold once — the geometry barely moves within a sub-step, so the manifold
-  is reused.
-- The **velocity solver** then iterates `num_velocity_iterations` times over
-  those cached manifolds, converging the coupled contacts *without* paying the
-  narrow-phase cost again.
+- It integrates the bodies once, re-evaluates the narrow phase at the new pose,
+  then **projects** every penetrating contact apart in one Gauss–Seidel position
+  pass.
+- It derives each body's velocity from the position delta, then runs one
+  velocity pass for friction and restitution.
 
-This work is delegated to the shared {doc}`solver core <../api/engine>` so the
-serial engine and the parallel workers run the identical solve.
+Convergence comes from *more sub-steps*, not from sweeping the same contacts
+repeatedly. This work is delegated to the shared
+{doc}`solver core <../api/engine>` so the serial engine and the parallel workers
+run the identical solve.
 
 ## Two solver back-ends
 
-The velocity solve has two interchangeable implementations behind the same
+The XPBD sub-step has two interchangeable implementations behind the same
 interface, selected by the `use_batched_solver` flag in
 {py:mod}`bocphysics.solver`:
 
-- **Scalar PGS (default)** — projected Gauss–Seidel as a plain Python loop:
-  prepare each contact once, then sweep the constraints `num_velocity_iterations`
-  times, applying impulses one contact at a time so each read sees the previous
-  update. In `FRICTION` mode the sweep is ordered apex-first (top-down, along
-  gravity) with accumulated impulses, which settles tall stacks faster.
-- **Batched solver** — the same projected Gauss–Seidel, but vectorised. It
-  **graph-colours** the contacts so that no two constraints in a colour share a
-  body, then resolves a whole colour at once as dense matrix kernels rather than
-  a per-contact Python loop. A colour is an independent set, so applying it in
-  one batched step matches the sequential sweep while amortising the interpreter
+- **Scalar XPBD (default)** — the position and velocity passes as plain Python
+  loops over the contacts ({py:mod}`bocphysics.xpbd`), applying each contact one
+  at a time so every read sees the previous update — a Gauss–Seidel sweep.
+- **Batched XPBD** — the same solve, but vectorised
+  ({py:mod}`bocphysics.xpbd_kernel`). It **graph-colours** the contacts so that
+  no two constraints in a colour share a movable body, then resolves a whole
+  colour at once as dense matrix kernels rather than a per-contact Python loop. A
+  colour is an independent set, so applying it in one batched step matches the
+  sequential sweep over that colour exactly while amortising the interpreter
   overhead across many contacts. This is the same colouring idea the parallel
   seam scheduler uses, applied here within a single solve.
 

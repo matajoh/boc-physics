@@ -20,7 +20,6 @@ keywords = [
     "concurrency",
     "behavior-oriented-concurrency",
     "boc",
-    "parallel",
     "teaching",
     "pyglet",
 ]

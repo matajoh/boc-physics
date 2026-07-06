@@ -29,7 +29,7 @@ knowledge; they build the model up from a single rule.
 | # | Page | What you will learn |
 |---|------|---------------------|
 | 1 | [Rigid-body physics](01-rigid-body-physics.md) | What a rigid body is, how state is stored, and how a body is moved each frame by numerical integration. |
-| 2 | [The serial engine](02-serial-engine.md) | The full single-threaded frame: broad phase, narrow phase, contact manifolds, and the projected Gauss–Seidel impulse solver. |
+| 2 | [The serial engine](02-serial-engine.md) | The full single-threaded frame: broad phase, narrow phase, contact points, and the position-based (XPBD) sub-step solver. |
 | 3 | [Batching for hardware](03-batching.md) | Why a per-contact Python loop is slow, and how a structure-of-arrays layout plus graph colouring turns the solver into dense matrix kernels. |
 | 4 | [Converting to BOC](04-converting-to-boc.md) | The honest path from a serial solver to a parallel one: the approaches that failed, why they failed, and the cown-and-behavior design that shipped. |
 | 5 | [Experiments and comparisons](05-experiments.md) | The partitioning strategies that were measured against each other, the numbers, and the fidelity trade-off the parallel path makes. |

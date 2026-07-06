@@ -4,14 +4,16 @@ from typing import List, Set, Tuple
 
 from bocpy import Matrix
 
-from . import solver
+from . import jacobi
 from .bodies import AABB, RigidBody
-from .config import DetectionKind, PhysicsMode
+from .config import DetectionKind
 from .detection import Detection
 from .physics import Physics
 
 
 ZERO_VEC = Matrix.vector([0, 0])
+
+JACOBI_SUBSTEPS = 16
 
 
 class PhysicsEngine:
@@ -25,24 +27,21 @@ class PhysicsEngine:
     Args:
         width (float): The width (in pixels) of the simulation window
         height (float): The height (in pixels) of the simulation window
-        mode (PhysicsMode): The physics mode to use
         detection_kind (DetectionKind): The collision detection algorithm to use
         show_contacts (bool): Whether to display contact points
         height_in_meters (float): The height of the simulation window in meters
-        num_substeps (int): Sub-steps per frame for the substep solver
-        num_velocity_iterations (int): Velocity iterations per sub-step for the
-                                       substep solver
+        num_substeps (int): Sub-steps per frame; defaults to 16
     """
 
     def __init__(self, width: float, height: float,
-                 mode: PhysicsMode, detection_kind: DetectionKind,
+                 detection_kind: DetectionKind,
                  show_contacts: bool, height_in_meters=30,
-                 num_substeps=4, num_velocity_iterations=10):
-        """Create the engine from the window size, physics mode, and detection kind."""
+                 num_substeps=None):
+        """Create the engine from the window size and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
         self.height = height_in_meters
-        self.physics = Physics(mode)
+        self.physics = Physics()
         self.bounds = AABB(-self.width / 2, -self.height / 2,
                            self.width / 2, self.height / 2)
         self.detection = Detection(detection_kind, AABB(-self.width, -self.height,
@@ -55,9 +54,9 @@ class PhysicsEngine:
         self.center = Matrix.vector([self.width / 2, self.height / 2])
         self.contacts: Set[Tuple[float, float]] = set()
         self.show_contacts = show_contacts
-        self.mode = mode
+        if num_substeps is None:
+            num_substeps = JACOBI_SUBSTEPS
         self.num_substeps = num_substeps
-        self.num_velocity_iterations = num_velocity_iterations
         self.swept_slop = 0.25
         self.systems = {
             "physics": ["position", "angle",
@@ -103,20 +102,18 @@ class PhysicsEngine:
 
     def solve_substep(self, bodies: List[RigidBody],
                       pairs: List[Tuple[RigidBody, RigidBody]], sub_dt: float):
-        """Advance every dynamic body, separating sub-steps from velocity iterations.
+        """Advance every dynamic body over the frame's sub-steps with the Jacobi XPBD solver.
 
         Description:
-            Each sub-step integrates the bodies then builds every pair's
-            contact manifold once, since the geometry barely moves within a
-            sub-step. The velocity solver then iterates over those cached
-            manifolds, converging the coupled contacts without paying the
-            narrow-phase cost again. The work is delegated to the shared
-            solver core so the parallel path runs the identical solve.
+            Each sub-step integrates the bodies, re-evaluates the narrow phase
+            at the new pose, projects penetrating contacts apart in a single
+            position pass, derives velocities from the position delta, then runs
+            one velocity pass for friction and restitution.
         """
         contacts = self.contacts if self.show_contacts else None
-        solver.solve_group_substep(self.physics, bodies, pairs,
+        jacobi.solve_group_substep(self.physics, bodies, pairs,
                                    self.gravity, sub_dt, self.num_substeps,
-                                   self.num_velocity_iterations, contacts)
+                                   contacts)
 
     def step(self, dt: float):
         """Advances the simulation by a time step.

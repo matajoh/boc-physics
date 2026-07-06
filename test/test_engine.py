@@ -5,17 +5,19 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics import solver
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.config import DetectionKind, PhysicsMode
+from bocphysics.config import DetectionKind
 from bocphysics.engine import PhysicsEngine
-from bocphysics.scene import make_golden_scene, make_pachinko_scene
+from bocphysics.scene import (make_golden_scene, make_pachinko_scene,
+                              make_stack_scene)
+from bocphysics.simulation import MAX_PHYSICS_DT
 
 
-def make_engine() -> PhysicsEngine:
+def make_engine(num_substeps=None) -> PhysicsEngine:
     """Create a windowless engine with friction physics and quadtree detection."""
-    return PhysicsEngine(1200, 900, PhysicsMode.FRICTION,
-                         DetectionKind.QUADTREE, show_contacts=False)
+    extra = {} if num_substeps is None else {"num_substeps": num_substeps}
+    return PhysicsEngine(1200, 900,
+                         DetectionKind.QUADTREE, show_contacts=False, **extra)
 
 
 def test_overlapping_static_bodies_do_not_crash():
@@ -71,7 +73,7 @@ def test_remove_outside_culls_dynamics_but_keeps_statics():
 
 def test_portrait_world_keeps_bodies_in_top_band():
     """A portrait world keeps top-band bodies a width-based top edge would clip."""
-    engine = PhysicsEngine(600, 900, PhysicsMode.FRICTION,
+    engine = PhysicsEngine(600, 900,
                            DetectionKind.QUADTREE, show_contacts=False,
                            height_in_meters=36)
     body = Circle.create(0.6, 2.0, (10, 20, 30)).move_to(Matrix.vector([0, -15]))
@@ -136,32 +138,33 @@ def test_resolves_overlapping_pair():
 
 
 GOLDEN_SEED = 20260608
-GOLDEN_FRAMES = 370
+GOLDEN_FRAMES = 500
+# Golden rest pose: Jacobi XPBD static-friction solver, 16 sub-steps (converged pose).
 GOLDEN_STATE = [
-    (12.1429787266, 8.1815389916, 4.7134078558),
-    (-10.6930109032, 6.5466243615, 8.5311682027),
-    (5.0167477482, 7.5945280973, 5.8788486127),
-    (2.5349556221, 6.9474943650, -0.6584228005),
-    (-5.2901270281, 6.8462424534, 7.1335997040),
-    (2.2138374314, 5.5803358150, 4.2952092335),
-    (-10.1316302116, 8.2087632591, 4.7143520375),
-    (1.4461721888, 8.3711131857, 7.0656172109),
-    (-11.9669316100, 7.9668346647, 3.0885759058),
-    (-8.5828972569, 6.6066259273, 3.7984514210),
-    (-6.9904082440, 8.0079764722, 4.7143358503),
-    (1.1530819635, 6.9566552343, -4.8848777264),
-    (8.3985781676, 7.8469371768, 5.9389263768),
-    (10.8154677943, 6.2608359471, 1.5751819101),
-    (10.6018558840, 8.1327908346, 0.7874353655),
-    (4.5363835886, 5.9023756988, 4.3064103022),
-    (6.8187422956, 8.4889899792, 2.6198828747),
-    (-3.3601183228, 7.9138108591, 4.7105929458),
-    (3.2104303710, 8.1795202416, 0.8656201259),
-    (-0.3873694899, 6.4888457570, 2.4262100090),
-    (-1.7909382603, 6.6744927327, -0.5859599379),
-    (-3.6223676495, 6.1199966096, -0.0021820036),
-    (-5.3756235714, 8.3117943338, 5.4942882099),
-    (-1.3072697512, 8.1401630288, 0.0015736755),
+    (-1.9802062210, 6.8250291993, 3.3667740515),
+    (8.0480855896, 6.6134373343, 5.2932780834),
+    (2.8055675701, 7.9089540770, 4.7106621289),
+    (-10.4994673625, 6.5800375717, 5.8501777814),
+    (10.3465067894, 6.3226029520, -10.8910559967),
+    (4.9469646572, 6.5663365916, 0.3009887396),
+    (11.7555358067, 7.8709913414, 8.1027558868),
+    (7.6756516512, 8.2138361123, 4.1924167645),
+    (-12.1560751350, 6.7300122886, 1.7881012230),
+    (-11.4883829542, 8.2853065285, 0.7829713460),
+    (-5.8680453133, 7.7615990618, 3.8570842604),
+    (-9.7587663466, 8.1321553898, 2.2017370920),
+    (-3.4649045953, 8.0188807782, 4.7146781731),
+    (1.0699874519, 8.2451565115, 12.5671902121),
+    (6.1781895832, 8.4077027185, 0.7883724033),
+    (9.2845090999, 8.1012493587, 10.9980455473),
+    (-7.1847542290, 8.3659125848, 6.0024731177),
+    (6.5143435108, 7.0425625795, 2.8440464799),
+    (2.5789954774, 5.7341649844, 1.5670624120),
+    (-0.9901047082, 8.2408533925, 5.2397016166),
+    (12.1378479162, 5.9168493332, 3.9097291764),
+    (-8.0957236738, 7.1855627645, 0.2800435103),
+    (4.6816534009, 8.2052161987, 0.9141986917),
+    (-4.8353708669, 6.7646370341, 3.0739038856),
 ]
 
 
@@ -176,11 +179,10 @@ def test_golden_master_state_is_reproducible():
 
     Description:
         This is the determinism oracle for the engine. A fixed seed and frame
-        count drive a 24-body scatter to a recorded final state.
-        Any change that perturbs the physics, including a future concurrent
-        solver that reorders contact work, must reproduce these values exactly.
+        count drive a 24-body scatter to a recorded final state. Any change that
+        perturbs the physics must reproduce these values exactly.
     """
-    engine = make_engine()
+    engine = make_engine(num_substeps=16)
     build_golden_scene(engine, GOLDEN_SEED)
     for _ in range(GOLDEN_FRAMES):
         engine.step(1 / 60)
@@ -191,86 +193,6 @@ def test_golden_master_state_is_reproducible():
         assert body.position.x == pytest.approx(x, abs=1e-6)
         assert body.position.y == pytest.approx(y, abs=1e-6)
         assert body.angle == pytest.approx(angle, abs=1e-6)
-
-
-def test_loose_quadtree_settles_like_quadtree():
-    """The loose-quadtree serial path settles the scene without tunneling.
-
-    Description:
-        LOOSE_QUADTREE finds the same candidate pairs as QUADTREE but resolves
-        them in a different order, so the two are not bit-identical. They must
-        still agree on the physical invariant: every body comes to rest on top
-        of the floor, none tunnels through it, and the pile reaches the same
-        coarse height. This is the serial-vs-serial invariant parity gate.
-    """
-    def settle(detection):
-        """Run the golden scene to rest under one detection kind."""
-        engine = PhysicsEngine(1200, 900, PhysicsMode.FRICTION, detection,
-                               show_contacts=False)
-        build_golden_scene(engine, GOLDEN_SEED)
-        for _ in range(GOLDEN_FRAMES):
-            engine.step(1 / 60)
-
-        return [body for body in engine.bodies if body.physics]
-
-    reference = settle(DetectionKind.QUADTREE)
-    loose = settle(DetectionKind.LOOSE_QUADTREE)
-
-    assert len(loose) == len(reference)
-    assert all(body.position.y < 11 for body in loose)
-    ref_speed = max(body.linear_velocity.magnitude() for body in reference)
-    loose_speed = max(body.linear_velocity.magnitude() for body in loose)
-    assert loose_speed <= ref_speed + 1.0
-    ref_top = min(body.position.y for body in reference)
-    loose_top = min(body.position.y for body in loose)
-    assert loose_top == pytest.approx(ref_top, abs=2.0)
-
-
-def settle_golden(batched):
-    """Settle the golden scene to rest with the batched solver on or off."""
-    engine = make_engine()
-    build_golden_scene(engine, GOLDEN_SEED)
-    solver.use_batched_solver = batched
-    try:
-        for _ in range(GOLDEN_FRAMES):
-            engine.step(1 / 60)
-    finally:
-        solver.use_batched_solver = False
-
-    return [body for body in engine.bodies if body.physics]
-
-
-def kinetic_energy(bodies):
-    """Total translational plus rotational kinetic energy of the bodies."""
-    return sum(
-        0.5 * body.mass * body.linear_velocity.magnitude_squared()
-        + 0.5 * body.inertia * body.angular_velocity ** 2
-        for body in bodies
-    )
-
-
-def test_batched_solver_settles_like_serial():
-    """The colour-batched velocity solver settles the scene like the serial one.
-
-    Description:
-        The batched kernel runs the same accumulated PGS as the serial solver but
-        visits manifolds in body-disjoint colour order rather than the serial
-        path's gravity-aligned apex-first order, so it is not bit-identical and
-        cannot share the golden master. With accumulation the two now settle to
-        nearly the same pile; this gate asserts the robust physical invariants:
-        nothing tunnels the floor, the pile reaches the same height to within a
-        tight band, and the batched solver never carries more energy than serial.
-        This is the settling-band parity gate.
-    """
-    reference = settle_golden(False)
-    batched = settle_golden(True)
-
-    assert len(batched) == len(reference)
-    assert all(body.position.y < 11 for body in batched)
-    ref_top = min(body.position.y for body in reference)
-    batched_top = min(body.position.y for body in batched)
-    assert batched_top == pytest.approx(ref_top, abs=1.0)
-    assert kinetic_energy(batched) <= kinetic_energy(reference) * 1.2 + 1e-6
 
 
 def test_add_body_assigns_unique_uids():
@@ -294,3 +216,25 @@ def test_uids_are_stable_across_frames():
 
     for body in engine.bodies:
         assert body.uid == before[id(body)]
+
+
+def test_stack_is_stable_at_the_max_physics_step():
+    """The GUI dt clamp keeps a tall stack stable; bumping it past this would explode.
+
+    Description:
+        The interactive loop caps the physics step at MAX_PHYSICS_DT so a slow
+        render or startup frame cannot feed a huge dt into the explicit
+        integrator. This gate pins that constant inside the stable regime: an
+        eight-box stack stepped at exactly MAX_PHYSICS_DT must not gain energy.
+    """
+    engine = make_engine(num_substeps=8)
+    for body in make_stack_scene(8).build():
+        engine.add_body(body)
+
+    peak = 0.0
+    for _ in range(300):
+        engine.step(MAX_PHYSICS_DT)
+        peak = max(peak, max(b.linear_velocity.magnitude()
+                             for b in engine.bodies if b.physics))
+
+    assert peak < 1.0

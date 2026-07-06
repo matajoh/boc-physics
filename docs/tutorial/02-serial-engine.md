@@ -14,7 +14,7 @@ detour — it is the reference the parallel version must reproduce.
 The frame driver lives in
 [`src/bocphysics/engine.py`](../../src/bocphysics/engine.py); the collision and
 solver stages live in the neighbouring `detection.py`, `collisions.py`,
-`contacts.py`, `solver.py`, and `physics.py`.
+`contacts.py`, `xpbd.py`, and `physics.py`.
 
 ## Step first, fix afterwards
 
@@ -34,14 +34,7 @@ each other and the approach collapses under its own algebra.
 
 bocphysics takes the second route, **a posteriori** (after-the-fact): take a
 small step *blindly*, then look for any overlaps you just created and push them
-apart. The engine's own `step` says as much in its first comment:
-
-```python
-# the main problem inherent in a posteriori physics simulation
-# is "tunneling" where objects pass through each other.
-# to mitigate this, we subdivide the time step into smaller
-# increments and resolve collisions at each step using impulses.
-```
+apart.
 
 ![A posteriori detection: step into an overlap, then resolve it](../images/aposteriori.gif)
 
@@ -128,10 +121,11 @@ flowchart TD
     C --> D[keep dynamic<br/>bodies and pairs]
     D --> E{for each<br/>sub-step}
     E -->|next| F[integrate:<br/>semi-implicit Euler]
-    F --> G[build manifolds:<br/>narrow phase + contacts]
-    G --> H[positional correction]
-    H --> I[velocity solve:<br/>N iterations]
-    I --> E
+    F --> G[build contacts:<br/>narrow phase]
+    G --> H[position solve:<br/>push apart by depth]
+    H --> I[derive velocities:<br/>from position delta]
+    I --> K[velocity solve:<br/>friction + restitution]
+    K --> E
     E -->|done| J[remove bodies<br/>outside bounds]
 ```
 
@@ -251,7 +245,7 @@ axes.
 
 ## Contact points
 
-The normal and depth tell the solver *which way* to push, but an impulse also
+The normal and depth tell the solver *which way* to push, but the solver also
 needs to know *where* to push — the **contact points**. For a circle there is
 exactly one, its centre plus the normal times its radius. For two polygons there
 can be one (a corner resting on a face) or two (an edge lying flat on a face):
@@ -271,103 +265,121 @@ The whole query is pure geometry with no side effects, which matters later: the
 parallel workers run the identical contact code and must get byte-identical
 points.
 
-## Resolving contacts: sub-steps and projected Gauss–Seidel
+## Resolving contacts: sub-steps and position-based dynamics
 
 Now the engine knows every overlap, its normal and depth, and its contact
 points. Turning that into motion is `solve_substep`, which hands the work to the
 shared solver core so the serial and parallel paths run the *same* solve:
 
 ```python
-def solve_group_substep(physics, bodies, pairs, gravity, sub_dt,
-                        num_substeps, num_velocity_iterations, contacts):
-    for _ in range(num_substeps):
-        integrate_block(bodies, gravity, sub_dt)
-        resolve_manifolds(physics, pairs, num_velocity_iterations, contacts)
+def solve_substep(physics, bodies, pairs, gravity, h, contacts=None):
+    previous = snapshot_poses(bodies)              # remember where each body started
+    integrate_block(bodies, gravity, h)            # step blindly forward by h
+    constraints = build_contacts(pairs, contacts)  # narrow phase at the new pose
+    lambdas = solve_positions(constraints)         # push overlaps apart in position
+    derive_velocities(bodies, previous, h)         # velocity = (new - old) / h
+    solve_velocities(physics, constraints, lambdas, h, gravity)  # friction + bounce
 ```
 
-This is the heart of the a-posteriori loop, and it has **two nested levels of
-iteration** that are easy to confuse:
+This is **Extended Position-Based Dynamics** (XPBD), the rigid-body scheme of
+[Müller 2020](07-references.md#muller-2020), and it is worth pausing on because it
+runs backwards from what you might expect. A classical solver computes contact
+*forces*, turns them into impulses, and integrates those into velocities. XPBD
+moves the bodies first, corrects their **positions** until they no longer overlap,
+and only then reads the velocity *back* from how far each body actually moved.
+Position is the primary variable; velocity is a consequence.
 
-- **Sub-steps** (`num_substeps`, default 4) chop the frame in time. Each
-  sub-step integrates the bodies forward by `dt / num_substeps`, then rebuilds
-  and resolves contacts. More sub-steps means smaller advances and less
-  tunnelling — this is the tunnelling defence promised earlier, and for a given
-  amount of work many small sub-steps also converge better than a few large ones
-  ([Macklin 2019](07-references.md#macklin-2019)).
-- **Velocity iterations** (`num_velocity_iterations`, default 10) happen
-  *within* a sub-step. They sweep the same cached contacts over and over,
-  nudging velocities until the whole coupled pile agrees.
-
-Each sub-step does three things, in `resolve_manifolds`: **build** every pair's
-manifold at the current pose (re-running the narrow phase and dropping any false
-positives the broad phase let through), apply a one-shot **positional
-correction** that pushes overlapping bodies apart along the MTV, then run the
-**velocity solve**.
-
-The velocity solve is **projected Gauss–Seidel** (PGS), also called sequential
-impulses ([Catto 2009](07-references.md#catto-2009)). Rather than assembling and
-inverting one big matrix, it resolves each
-contact in turn with a small impulse, and repeats the sweep. Each contact sees
-the velocity left behind by the contacts solved before it, so information
-propagates through a stack — the floor pushes the bottom box, which pushes the
-next, and after enough sweeps the whole tower is consistent. "Gauss–Seidel" is
-exactly this *use-the-latest-value* sweep; "projected" is the clamp that keeps
-each impulse physical.
-
-The simplest mode shows the core impulse with no rotation or friction:
+A whole frame is just this sub-step repeated:
 
 ```python
-e = self.restitution_for(contact_velocity_mag)
-j = -(1 + e) * contact_velocity_mag
-j /= a.inv_mass + b.inv_mass
-impulse = j * normal
+def solve_group_substep(physics, bodies, pairs, gravity, sub_dt, num_substeps, contacts=None):
+    for _ in range(num_substeps):
+        solve_substep(physics, bodies, pairs, gravity, sub_dt, contacts)
 ```
 
-That is the textbook collision response: the impulse magnitude is
+The single knob is `num_substeps` (default 8). Each sub-step integrates the bodies
+forward by `dt / num_substeps`, rebuilds the contacts at the new pose, and solves
+them once. There is **no inner iteration count** — XPBD does a single position pass
+and a single velocity pass per sub-step, and convergence comes from *taking more,
+smaller sub-steps* rather than from sweeping the same contacts over and over. More
+sub-steps means smaller advances, less tunnelling, and a stiffer pile; for a given
+amount of work many small sub-steps beat a few large ones
+([Macklin 2019](07-references.md#macklin-2019)).
+
+### The position solve
+
+`build_contacts` re-runs the narrow phase at the freshly integrated pose and emits
+one **constraint** per penetrating contact point (dropping any false positive the
+broad phase let through). `solve_positions` then makes a single Gauss–Seidel pass
+over them, pushing each overlapping pair apart along its normal:
+
+```python
+w = generalized_inverse_mass(a, r_a, normal) + generalized_inverse_mass(b, r_b, normal)
+magnitude = depth / w
+apply_positional_impulse(a, b, r_a, r_b, normal * magnitude)
+```
+
+The pair is moved apart by the penetration `depth`, split between them in
+proportion to their **generalised inverse mass** `w` — the same inverse masses
+from [Chapter 1](01-rigid-body-physics.md#why-mass-and-inertia-are-stored-inverted),
+now carrying a rotational term $(\mathbf{r}\times\mathbf{n})^2 / I$ so an
+off-centre hit also imparts spin. A static wall contributes nothing to `w`, so it
+takes none of the correction and the moving body is pushed out on its own.
+"Gauss–Seidel" means the pass visits contacts one at a time and each sees the
+positions the earlier ones just nudged, so a correction propagates up a stack —
+the floor pushes the bottom box, which pushes the next. The push-out magnitude is
+recorded as a **lambda**, the accumulated normal correction the velocity pass will
+reuse. For rigid contacts the XPBD *compliance* is zero; a soft constraint would
+divide the push by a non-zero stiffness instead.
+
+### Deriving velocity, then correcting it
+
+Once the positions are settled, `derive_velocities` reads each body's velocity
+straight off its motion over the sub-step:
 
 $$
-j = \frac{-(1 + e)\,(\mathbf{v}_{rel} \cdot \mathbf{n})}{m_a^{-1} + m_b^{-1}},
+\mathbf{v} = \frac{\mathbf{x}_{\text{new}} - \mathbf{x}_{\text{old}}}{h},
+\qquad
+\omega = \frac{\theta_{\text{new}} - \theta_{\text{old}}}{h}.
 $$
 
-where $e$ is the **coefficient of restitution** (1 is a perfect bounce, 0 is no
-bounce). Here the inverse masses from
-[Chapter 1](01-rigid-body-physics.md#why-mass-and-inertia-are-stored-inverted)
-pay off: a static wall has $m^{-1} = 0$, so it contributes nothing to the
-denominator and receives none of the impulse — it just reflects the moving body.
+This is the heart of position-based dynamics: a body pushed out of a wall now *has*
+the outward velocity that push implies, for free, with no impulse formula.
+`solve_velocities` then makes one final pass to add the two effects that positions
+alone cannot capture — **restitution** and **friction**:
 
-### Four levels of fidelity
+```python
+e = 0.0 if abs(vn) <= 2 * g * h else physics.restitution
+dvn = -vn + max(-e * bias_velocity, 0.0)        # cancel approach, add bounce
+```
 
-The `PhysicsMode` enum selects how much of the real response to model, so the
-engine can double as a teaching ladder:
+Restitution adds back a fraction `e` of the closing speed sampled *before* the
+solve, so a ball rebounds. The bounce is **gated off** (`e = 0`) when the approach
+speed is down at the gravity scale `2·g·h` — that is what stops a resting stack
+from buzzing as gravity re-presses it each sub-step, the position-based answer to
+the old *restitution target*. Friction caps the tangential velocity change at the
+Coulomb bound `μ_d · f_n`, where the normal force `f_n = λ / h²` is recovered from
+the position lambda — stick when it can, slide when it must.
 
-| Mode | What it does |
-|------|--------------|
-| `NONE` | Cancel the normal velocity component only — bodies stop, no bounce. |
-| `BASIC` | The linear impulse above: bounce, but no spin and no friction. |
-| `ROTATION` | Impulses applied at the contact points, so off-centre hits impart spin. |
-| `FRICTION` | Adds a tangential impulse, bounded by a Coulomb cone, so piles rest and slide realistically. |
-
-The two richer modes (`is_contact_mode`) cache per-contact data once per
-sub-step in `prepare_collision` — the lever arms, the effective mass along the
-normal, and the **restitution target**, which is sampled *once* from the
-closing speed so repeated velocity iterations cannot pump energy into a resting
-stack. The default mode is `FRICTION`, whose accumulated-impulse PGS clamps a
-running total per contact (so a later sweep can undo an earlier over-push) and
-keeps the tangential impulse inside the friction cone — stick when it can, slide
-when it must. The details live in
-[`physics.py`](../../src/bocphysics/physics.py).
+Every one of these functions is a module-level free function over plain bodies,
+pairs, and a `Physics` system; nothing is hidden in object state. That is exactly
+what lets a worker sub-interpreter run the **identical** solve later —
+*same core, different scheduler*. The details live in
+[`xpbd.py`](../../src/bocphysics/xpbd.py).
 
 ## Where we are
 
 We now have the whole serial frame: a cheap broad phase that nominates candidate
 pairs, an exact SAT narrow phase that returns a normal and depth, a contact
-generator that says where to push, and a sub-stepped projected-Gauss–Seidel
-solver that turns all of it into stable, believable motion. Run it and the
-`pachinko` and drop-box scenes settle into convincing piles — on one thread.
+generator that says where to push, and a sub-stepped XPBD solver that corrects
+positions and reads velocities back to turn all of it into stable, believable
+motion. Run it and the `pachinko` and drop-box scenes settle into convincing
+piles — on one thread.
 
-That last phrase is the catch. The per-contact Python loop at the centre of the
-solver is also its bottleneck: thousands of tiny impulse calculations, each one
-a handful of Python operations. [Chapter 3](03-batching.md) looks at why that
-loop is slow on modern hardware, and how reshaping the data lets us replace the
-loop with dense batched kernels — the groundwork the parallel solver will build
-on.
+That last phrase is the catch. The position and velocity passes walk every
+contact one at a time in a Python loop, and on a busy frame — eight sub-steps,
+each rebuilding and solving a few hundred contacts — that loop is the bottleneck:
+thousands of tiny per-contact calculations, each a handful of Python operations.
+[Chapter 3](03-batching.md) looks at why that loop is slow on modern hardware,
+and how reshaping the data lets us replace it with dense batched kernels — the
+groundwork the parallel solver will build on.

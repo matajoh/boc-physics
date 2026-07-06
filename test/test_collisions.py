@@ -11,9 +11,14 @@ import random
 
 from bocpy import Matrix
 
+from bocphysics import xpbd
 from bocphysics.bodies import Circle, Polygon
-from bocphysics.collisions import (closest_vertex_on_polygon, Collision,
-                                   detect_collision, intersect_circle_circle)
+from bocphysics.collisions import (batched_circle_circle, batched_circle_polygon,
+                                   batched_polygon_polygon,
+                                   closest_vertex_on_polygon, Collision,
+                                   detect_collision, intersect_circle_circle,
+                                   intersect_circle_polygon,
+                                   intersect_polygon_polygon)
 
 COLOR = (180, 90, 90)
 
@@ -115,6 +120,32 @@ def collisions_equal(p, q):
     return p.normal.x == q.normal.x and p.normal.y == q.normal.y and p.depth == q.depth
 
 
+def ref_closest_vertex_on_polygon(point, poly):
+    """Original per-vertex closest-vertex loop, kept as the parity oracle."""
+    closest = None
+    dist = float("inf")
+    for v in poly.transformed_vertices:
+        d = (point - v).magnitude_squared()
+        if d < dist:
+            closest = v
+            dist = d
+
+    return closest
+
+
+def test_closest_vertex_matches_reference():
+    """The argmin closest-vertex search equals the per-vertex loop bit-for-bit."""
+    rng = random.Random(20260628)
+    for _ in range(2000):
+        poly = place(make_body(rng), 0.0, 0.0, rng.uniform(-math.pi, math.pi))
+        while isinstance(poly, Circle):
+            poly = place(make_body(rng), 0.0, 0.0, rng.uniform(-math.pi, math.pi))
+        point = Matrix.vector([rng.uniform(-2.5, 2.5), rng.uniform(-2.5, 2.5)])
+        reference = ref_closest_vertex_on_polygon(point, poly)
+        batched = closest_vertex_on_polygon(point, poly)
+        assert batched.x == reference.x and batched.y == reference.y
+
+
 def test_batched_sat_matches_reference():
     """The batched narrow phase equals the per-axis reference bit-for-bit."""
     rng = random.Random(20260619)
@@ -132,4 +163,76 @@ def test_batched_sat_matches_reference():
 
             assert collisions_equal(reference, batched)
 
+    assert hits > 0
+
+
+def make_circle(rng):
+    """Build a randomly sized, randomly placed circle."""
+    body = Circle.create(rng.uniform(0.4, 1.3), 1.0, COLOR)
+    return place(body, rng.uniform(-1.6, 1.6), rng.uniform(-1.6, 1.6), 0.0)
+
+
+def make_polygon(rng):
+    """Build a randomly shaped, randomly posed polygon (never a circle)."""
+    body = make_body(rng)
+    while isinstance(body, Circle):
+        body = make_body(rng)
+    return place(body, rng.uniform(-1.6, 1.6), rng.uniform(-1.6, 1.6),
+                 rng.uniform(-math.pi, math.pi))
+
+
+def test_batched_circle_circle_matches_reference():
+    """The batched circle-circle test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260628)
+    pairs = []
+    for _ in range(2000):
+        a = make_circle(rng)
+        b = make_circle(rng)
+        pairs.append((a, b))
+    batched = batched_circle_circle(pairs)
+    hits = 0
+    for (a, b), got in zip(pairs, batched):
+        ref = intersect_circle_circle(a, b)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
+    assert hits > 0
+
+
+def test_batched_circle_polygon_matches_reference():
+    """The batched circle-polygon test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260629)
+    pairs = []
+    for _ in range(2000):
+        pairs.append((make_circle(rng), make_polygon(rng)))
+    for i, (_c, p) in enumerate(pairs):
+        p.uid = i
+    geom = xpbd.GeometryPool([p for _, p in pairs])
+    batched = batched_circle_polygon(pairs, geom)
+    hits = 0
+    for (c, p), got in zip(pairs, batched):
+        ref = intersect_circle_polygon(c, p)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
+    assert hits > 0
+
+
+def test_batched_polygon_polygon_matches_reference():
+    """The batched polygon-polygon test equals the per-pair oracle bit-for-bit."""
+    rng = random.Random(20260630)
+    pairs = []
+    for _ in range(2000):
+        pairs.append((make_polygon(rng), make_polygon(rng)))
+    polys = [p for pair in pairs for p in pair]
+    for i, p in enumerate(polys):
+        p.uid = i
+    geom = xpbd.GeometryPool(polys)
+    batched = batched_polygon_polygon(pairs, geom)
+    hits = 0
+    for (a, b), got in zip(pairs, batched):
+        ref = intersect_polygon_polygon(a, b)
+        if ref is not None:
+            hits += 1
+        assert collisions_equal(ref, got)
     assert hits > 0

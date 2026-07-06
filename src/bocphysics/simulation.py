@@ -6,19 +6,19 @@ import os
 import random
 import time
 
-from bocpy import Matrix, pump, quiesce, wait
+from bocpy import Matrix
 import pyglet
 from pyglet.window import key, mouse
 
 from .bodies import Circle, Polygon
 from .config import DetectionKind, Resolution
-from .engine import PhysicsEngine, PhysicsMode
-from .parallel import DEFAULT_SLABS, MIN_SLAB_BODIES, ParallelStepper
-from .patches import build_slab_partition, slab_boundaries
-from .quadtree import QuadTree
-from .render import (Camera, draw_box_overlay, draw_frame, draw_slab_fills,
-                     draw_static_layer)
+from .engine import PhysicsEngine
+from .render import Camera, draw_frame, draw_static_layer
 from .scene import DEFAULT_SCENE, Scene
+from .spawn import SpawnQueue
+
+# Cap the physics step so a slow render or startup frame cannot blow up the explicit integrator.
+MAX_PHYSICS_DT = 1 / 50
 
 
 def _fit_resolution(resolution: Resolution, view_aspect: float) -> Resolution:
@@ -33,11 +33,9 @@ class Simulation(pyglet.window.Window):
     """The interactive pyglet window driving the physics simulation."""
 
     def __init__(self, resolution: Resolution,
-                 physics_mode=PhysicsMode.FRICTION,
                  detection_kind=DetectionKind.QUADTREE,
                  debug=False, show_contacts=False, snapshot=False,
-                 scene: Scene = DEFAULT_SCENE,
-                 parallel=False, workers=None, overlay="none", visible=True):
+                 scene: Scene = DEFAULT_SCENE, visible=True, substeps=None):
         """Create the window, physics engine, and the static scene bodies."""
         resolution = _fit_resolution(resolution, scene.view_aspect)
         super().__init__(resolution.width, resolution.height, "bocphysics",
@@ -46,21 +44,21 @@ class Simulation(pyglet.window.Window):
         self.debug = debug
         self.snapshot = snapshot
         self.paused = False
-        self.overlay = overlay
         self.batch = pyglet.graphics.Batch()
         self.frame_shapes = []
         self.physics_elapsed = 0
         self.frame_elapsed = 0
         self.samples = 0
         self.frame_count = 0
-        self.last_frame_count = 0
         self.fps_stats = "FPS: "
         self.physics_stats = "Physics: ms"
 
         view_height = scene.view_height or 30
-        self.engine = PhysicsEngine(resolution.width, resolution.height, physics_mode,
-                                    detection_kind, show_contacts,
-                                    height_in_meters=view_height)
+        engine_kwargs = {"height_in_meters": view_height}
+        if substeps is not None:
+            engine_kwargs["num_substeps"] = substeps
+        self.engine = PhysicsEngine(resolution.width, resolution.height,
+                                    detection_kind, show_contacts, **engine_kwargs)
         self.camera = Camera(self.engine.center, self.engine.scale, resolution.height)
         for body in scene.build():
             self.engine.add_body(body)
@@ -71,13 +69,7 @@ class Simulation(pyglet.window.Window):
         statics = [body for body in self.engine.bodies if body.render and not body.physics]
         self.static_shapes = draw_static_layer(statics, self.static_batch, self.camera)
 
-        self.parallel = parallel
-        self.stepper = None
-        self.in_flight = 0
-        self.pending_spawns = []
-        if self.parallel:
-            self.stepper = ParallelStepper(self.engine)
-            self.stepper.begin(worker_count=workers)
+        self.spawn_queue = SpawnQueue()
 
         self.labels = []
         if self.debug:
@@ -110,12 +102,9 @@ class Simulation(pyglet.window.Window):
                 label.draw()
 
     def render_scene(self, batch):
-        """Build the moving bodies, contacts, and any partition overlay into one batch."""
-        grayscale = self.overlay != "none"
+        """Build the moving bodies and contacts into one batch."""
         dynamics = [body for body in self.engine.bodies if body.render and body.physics]
-        kept = draw_frame(dynamics, self.engine.contacts, batch, self.camera, grayscale)
-        kept.extend(self.draw_overlay(batch))
-        return kept
+        return draw_frame(dynamics, self.engine.contacts, batch, self.camera)
 
     def render_to_buffer(self):
         """Draw one offscreen frame (statics then dynamics) and return the kept shapes and colour buffer."""
@@ -127,23 +116,6 @@ class Simulation(pyglet.window.Window):
         batch.draw()
         buffer = pyglet.image.get_buffer_manager().get_color_buffer()
         return kept, buffer
-
-    def draw_overlay(self, batch):
-        """Build the selected partition overlay (slabs or quadtree) into a batch."""
-        box = self.engine.detection.box
-        if self.overlay == "slabs":
-            partition = build_slab_partition(self.engine.bodies, [], box,
-                                             DEFAULT_SLABS, min_slab_bodies=MIN_SLAB_BODIES)
-            edges = [box.left, *slab_boundaries(partition), box.right]
-            return draw_slab_fills(edges, box.top, box.bottom, batch, self.camera)
-        if self.overlay == "quadtree":
-            tree = QuadTree(box)
-            for body in self.engine.bodies:
-                if body.collision and hasattr(body, "swept_aabb"):
-                    tree.add(body)
-            return draw_box_overlay(tree.boxes(), batch, self.camera)
-
-        return []
 
     def on_key_press(self, symbol, modifiers):
         """Close on ESCAPE and toggle the pause state on SPACE."""
@@ -177,40 +149,37 @@ class Simulation(pyglet.window.Window):
                 self.spawn_body(polygon.move_to(pos))
 
     def spawn_body(self, body):
-        """Add a body now (serial) or queue it for the next frame boundary (parallel).
+        """Queue a runtime-spawned body for admission once it fits without overlap.
 
         Description:
-            In the parallel path a frame may be in flight on the workers, which
-            read the body set, so a spawn cannot mutate it mid-frame. The body is
-            queued and applied once the pipeline is idle, which also bumps the
-            geometry version so the next step re-seeds it.
+            A click or generator can drop a body straight onto the pile; entering
+            the world at a deep overlap makes the solver fling it out. The queue
+            holds it until a frame where it fits, or discards it after a budget of
+            tries, keeping spawn admission entirely outside the physics step.
         """
-        if self.parallel:
-            self.pending_spawns.append(body)
-        else:
+        self.spawn_queue.enqueue(body)
+
+    def admit_spawns(self):
+        """Add every queued spawn that now fits without significant overlap."""
+        for body in self.spawn_queue.process(self.engine.bodies):
             self.engine.add_body(body)
 
     def on_close(self):
-        """Save a snapshot if requested, drain any workers, then close the window."""
+        """Save a snapshot if requested, then close the window."""
         if self.snapshot:
             self.save_snapshot()
-
-        if self.parallel:
-            wait()
 
         print("Shutting down...")
         self.close()
 
     def update(self, dt):
         """Advance the physics by one frame and refresh the debug stats."""
-        if self.parallel:
-            self.update_parallel(dt)
-            return
-
         if not self.paused:
-            self.tick_generators(dt)
+            step_dt = min(dt, MAX_PHYSICS_DT)
+            self.tick_generators(step_dt)
+            self.admit_spawns()
             start = time.perf_counter()
-            self.engine.step(dt)
+            self.engine.step(step_dt)
             self.physics_elapsed += time.perf_counter() - start
             self.frame_count += 1
 
@@ -228,45 +197,11 @@ class Simulation(pyglet.window.Window):
         self.samples += 1
         if self.samples > 100:
             self.fps_stats = f"FPS: {self.samples / self.frame_elapsed:.2f}"
-            if self.parallel:
-                physics_frames = self.frame_count - self.last_frame_count
-                ms = self.frame_elapsed / physics_frames * 1000 if physics_frames else 0.0
-            else:
-                ms = self.physics_elapsed / self.samples * 1000
+            ms = self.physics_elapsed / self.samples * 1000
             self.physics_stats = f"Physics: {ms:.2f} ms"
-            self.last_frame_count = self.frame_count
             self.physics_elapsed = 0
             self.frame_elapsed = 0
             self.samples = 0
-
-    def update_parallel(self, dt):
-        """Pump the previous parallel frame, then schedule the next when it is idle.
-
-        Description:
-            pump() runs any ready pinned behaviors and reports how many executed.
-            Each frame schedules exactly one pinned writeback, so a non-zero count
-            means the previous frame's writeback has landed and the pipeline is
-            idle. Only then are queued spawns applied and the next frame scheduled,
-            keeping at most one frame in flight (a depth-1 pipeline). The worker
-            solve runs async, so the honest per-frame cost is the rate at which
-            frames actually complete, not the main-thread time spent here.
-        """
-        self.in_flight -= pump().executed
-        if self.in_flight <= 0 and not self.paused:
-            self.tick_generators(dt)
-            self.apply_pending_spawns()
-            if self.stepper.step():
-                self.in_flight += 1
-                self.frame_count += 1
-
-        self.refresh_stats(dt)
-
-    def apply_pending_spawns(self):
-        """Add any click-spawned bodies now that the parallel pipeline is idle."""
-        for body in self.pending_spawns:
-            self.engine.add_body(body)
-
-        self.pending_spawns.clear()
 
     def run(self):
         """Schedule the update tick and enter the pyglet event loop."""
@@ -274,14 +209,10 @@ class Simulation(pyglet.window.Window):
         pyglet.app.run()
 
     def step_once(self, dt):
-        """Advance the physics one frame, draining the parallel pipeline if running."""
+        """Advance the physics one frame."""
         self.tick_generators(dt)
-        if self.parallel:
-            self.apply_pending_spawns()
-            if self.stepper.step():
-                quiesce(30.0)
-        else:
-            self.engine.step(dt)
+        self.admit_spawns()
+        self.engine.step(dt)
         self.frame_count += 1
 
     def record(self, path: str, frames: int, fps: int, dt: float = 1 / 60):
@@ -290,9 +221,9 @@ class Simulation(pyglet.window.Window):
         Description:
             Unlike the interactive loop, this advances at a fixed dt and captures
             every frame, so the output is deterministic and independent of the
-            wall clock. Generators, the serial or parallel step, and the overlay
-            all run exactly as they do on screen. The generator-fed scenes let
-            the drop-box benchmark be recorded straight from the simulator.
+            wall clock. Generators and the physics step run exactly as they do on
+            screen. The generator-fed scenes let the drop-box benchmark be
+            recorded straight from the simulator.
         """
         from .render import open_encoder
 
@@ -312,8 +243,6 @@ class Simulation(pyglet.window.Window):
         finally:
             encoder.stdin.close()
             encoder.wait()
-            if self.parallel:
-                wait()
             self.close()
 
         print(f"wrote {path} ({frames} frames at {fps} fps, "

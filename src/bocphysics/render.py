@@ -5,7 +5,6 @@ the world-to-screen projection) behind a small seam so the physics code
 never imports pyglet directly.
 """
 
-from colorsys import hls_to_rgb
 import math
 from typing import Tuple, Union
 
@@ -20,10 +19,6 @@ RGBA = Tuple[int, int, int, int]
 
 BLACK = (0, 0, 0, 255)
 YELLOW = (255, 255, 0, 255)
-OVERLAY_ORDER = 1_000_000
-SLAB_FILL_ALPHA = 30
-SLAB_SEAM_COLOR = (40, 40, 40, 220)
-QUADTREE_COLOR = (40, 100, 200, 200)
 
 
 def to_rgba(color: Color) -> RGBA:
@@ -119,47 +114,6 @@ def draw_frame(bodies, contacts, batch, project: Camera, grayscale=False) -> lis
         x, y = project(Matrix.vector([contact[0], contact[1]]))
         kept.append(shapes.Circle(x, y, 5, color=YELLOW, batch=batch, group=mark_group))
         kept.append(shapes.Arc(x, y, 5, thickness=2, color=BLACK, batch=batch, group=mark_group))
-
-    return kept
-
-
-def draw_slab_fills(edges, top: float, bottom: float, batch, project: Camera) -> list:
-    """Fill each slab column between adjacent edges with a translucent spectrum colour."""
-    from pyglet import graphics, shapes
-    group = graphics.Group(order=OVERLAY_ORDER)
-    kept = []
-    count = max(1, len(edges) - 1)
-    for i in range(len(edges) - 1):
-        r, g, b = hls_to_rgb(i / count, 0.5, 1.0)
-        color = (round(r * 255), round(g * 255), round(b * 255), SLAB_FILL_ALPHA)
-        x0, y0 = project(Matrix.vector([edges[i], top]))
-        x1, y1 = project(Matrix.vector([edges[i + 1], bottom]))
-        left, right = min(x0, x1), max(x0, x1)
-        lo, hi = min(y0, y1), max(y0, y1)
-        kept.append(shapes.Rectangle(left, lo, right - left, hi - lo,
-                                     color=color, batch=batch, group=group))
-
-    for x in edges[1:-1]:
-        x0, y0 = project(Matrix.vector([x, top]))
-        x1, y1 = project(Matrix.vector([x, bottom]))
-        kept.append(shapes.Line(x0, y0, x1, y1, thickness=2,
-                                color=SLAB_SEAM_COLOR, batch=batch, group=group))
-
-    return kept
-
-
-def draw_box_overlay(boxes, batch, project: Camera) -> list:
-    """Outline each AABB (e.g. quadtree cells); return the shapes to keep alive."""
-    from pyglet import graphics, shapes
-    group = graphics.Group(order=OVERLAY_ORDER)
-    kept = []
-    for box in boxes:
-        corners = [project(Matrix.vector([box.left, box.top])),
-                   project(Matrix.vector([box.right, box.top])),
-                   project(Matrix.vector([box.right, box.bottom])),
-                   project(Matrix.vector([box.left, box.bottom]))]
-        kept.append(shapes.MultiLine(*corners, closed=True, thickness=1,
-                                     color=QUADTREE_COLOR, batch=batch, group=group))
 
     return kept
 
