@@ -1,7 +1,5 @@
 """This module provides an implementation of a QuadTree data structure."""
 
-from typing import List, Tuple
-
 from .bodies import AABB, RigidBody
 
 
@@ -15,7 +13,7 @@ class Node:
         self.c1 = None
         self.c2 = None
         self.c3 = None
-        self.values: List[RigidBody] = []
+        self.values: list[RigidBody] = []
 
     def intersects(self, box: AABB) -> bool:
         """Check if this node intersects with a box."""
@@ -194,9 +192,9 @@ class QuadTree:
 
         return remove_(self.root, value)
 
-    def query(self, box: AABB) -> List[RigidBody]:
+    def query(self, box: AABB) -> list[RigidBody]:
         """Query the tree for values intersecting a box."""
-        def query_(node: Node, query_box: AABB, values: List[RigidBody]):
+        def query_(node: Node, query_box: AABB, values: list[RigidBody]):
             assert node is not None
             assert node.intersects(query_box)
             for value in node.values:
@@ -214,10 +212,10 @@ class QuadTree:
         query_(self.root, box, values)
         return values
 
-    def find_all_intersections(self, intersections: List[Tuple[RigidBody, RigidBody]]):
+    def find_all_intersections(self, intersections: list[tuple[RigidBody, RigidBody]]):
         """Find all intersections in the tree."""
         def find_intersections_in_child_(node: Node, value: RigidBody,
-                                         intersections: List[Tuple[RigidBody, RigidBody]]):
+                                         intersections: list[tuple[RigidBody, RigidBody]]):
             if node.box.disjoint(value.swept_aabb):
                 return
 
@@ -232,7 +230,7 @@ class QuadTree:
                 find_intersections_in_child_(child, value, intersections)
 
         def find_all_intersections_(node: Node,
-                                    intersections: List[Tuple[RigidBody, RigidBody]]):
+                                    intersections: list[tuple[RigidBody, RigidBody]]):
             num_values = len(node.values)
             for i in range(num_values):
                 for j in range(0, i):
@@ -251,7 +249,7 @@ class QuadTree:
 
         find_all_intersections_(self.root, intersections)
 
-    def boxes(self) -> List[AABB]:
+    def boxes(self) -> list[AABB]:
         """Return the box of every node, for drawing the subdivision as an overlay."""
         found = []
 

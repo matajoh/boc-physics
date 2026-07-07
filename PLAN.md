@@ -4,10 +4,10 @@
 
 Clean up all the crap the AI wrote. 
 
-1. [ ] Pare it back to just the code needed for a XPBD/Jacobi solver
-2. [ ] Timing test - AI can usefully help here
-3. [ ] Clean it up so it doesn't suck
-4. [ ] Timing test - AI can usefully help here
+1. [x] Pare it back to just the code needed for a XPBD/Jacobi solver
+2. [x] Timing test - AI can usefully help here
+3. [x] Clean it up so it doesn't suck
+4. [x] Timing test - AI can usefully help here
 5. [ ] Refactor to use boc.Matrix representations (e.g., no more Mr. RigidBody everywhere)
 6. [ ] Timing test - AI can usefully help here
 

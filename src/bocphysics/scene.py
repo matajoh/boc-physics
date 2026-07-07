@@ -12,7 +12,7 @@ from colorsys import hls_to_rgb
 import json
 import math
 import random
-from typing import List, NamedTuple, Tuple
+from typing import NamedTuple
 
 from bocpy import Matrix
 
@@ -25,7 +25,7 @@ class BodySpec(NamedTuple):
 
     kind: str
     color: Color
-    position: Tuple[float, float]
+    position: tuple[float, float]
     angle: float = 0.0
     width: float = 0.0
     height: float = 0.0
@@ -105,10 +105,10 @@ class GeneratorSpec(NamedTuple):
         unlimited); ``seed`` makes the stream reproducible.
     """
 
-    shapes: Tuple[ShapeCategory, ...]
-    x_range: Tuple[float, float]
-    y_range: Tuple[float, float]
-    size_range: Tuple[float, float]
+    shapes: tuple[ShapeCategory, ...]
+    x_range: tuple[float, float]
+    y_range: tuple[float, float]
+    size_range: tuple[float, float]
     rate: float
     color: Color = (200, 200, 200)
     randomize_color: bool = False
@@ -190,7 +190,7 @@ class Generator:
                             radius=self._sample_size() / 2, density=spec.density)
         return body.build(is_static=False)
 
-    def update(self, dt: float) -> List[RigidBody]:
+    def update(self, dt: float) -> list[RigidBody]:
         """Advance the arrival clock by dt and return the bodies emitted this frame."""
         self.clock += dt
         bodies = []
@@ -208,18 +208,18 @@ class Scene(NamedTuple):
     """A named collection of static and dynamic bodies and emitters."""
 
     name: str
-    statics: Tuple[BodySpec, ...]
-    dynamics: Tuple[BodySpec, ...] = ()
-    generators: Tuple[GeneratorSpec, ...] = ()
+    statics: tuple[BodySpec, ...]
+    dynamics: tuple[BodySpec, ...] = ()
+    generators: tuple[GeneratorSpec, ...] = ()
     view_height: float = 0.0
     view_aspect: float = 0.0
 
-    def build(self) -> List[RigidBody]:
+    def build(self) -> list[RigidBody]:
         """Construct all of the scene's bodies, statics first then dynamics."""
         return ([spec.build(is_static=True) for spec in self.statics] +
                 [spec.build(is_static=False) for spec in self.dynamics])
 
-    def make_generators(self) -> List[Generator]:
+    def make_generators(self) -> list[Generator]:
         """Instantiate a fresh runtime Generator for each of the scene's emitters."""
         return [Generator(spec) for spec in self.generators]
 
@@ -412,7 +412,7 @@ def make_pachinko_scene(rows: int = 6) -> Scene:
                  view_height=view_height, view_aspect=24.0 / view_height)
 
 
-def _drop_emitter(x_range: Tuple[float, float], rate: float) -> GeneratorSpec:
+def _drop_emitter(x_range: tuple[float, float], rate: float) -> GeneratorSpec:
     """A single emitter raining a mix of large convex shapes from above the arena."""
     shapes = (ShapeCategory("circle"), ShapeCategory("rectangle"),
               ShapeCategory("regular_polygon", num_sides=3),

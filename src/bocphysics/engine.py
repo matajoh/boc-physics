@@ -1,19 +1,15 @@
 """Module containing the physics engine."""
 
-from typing import List, Set, Tuple
-
 from bocpy import Matrix
 
-from . import jacobi
 from .bodies import AABB, RigidBody
 from .config import DetectionKind
 from .detection import Detection
 from .physics import Physics
+from .solver import Solver
 
 
 ZERO_VEC = Matrix.vector([0, 0])
-
-JACOBI_SUBSTEPS = 16
 
 
 class PhysicsEngine:
@@ -36,7 +32,7 @@ class PhysicsEngine:
     def __init__(self, width: float, height: float,
                  detection_kind: DetectionKind,
                  show_contacts: bool, height_in_meters=30,
-                 num_substeps=None):
+                 num_substeps=16):
         """Create the engine from the window size and detection kind."""
         self.scale = height / height_in_meters
         self.width = width / self.scale
@@ -46,16 +42,15 @@ class PhysicsEngine:
                            self.width / 2, self.height / 2)
         self.detection = Detection(detection_kind, AABB(-self.width, -self.height,
                                                         self.width, self.height))
-        self.bodies: List[RigidBody] = []
+        self.bodies: list[RigidBody] = []
         self.gravity = Matrix.vector([0, 9.81])
-        self.collisions: List[Tuple[RigidBody, RigidBody]] = []
-        self.to_remove: List[RigidBody] = []
+        self.collisions: list[tuple[RigidBody, RigidBody]] = []
+        self.to_remove: list[RigidBody] = []
         self.next_uid = 0
         self.center = Matrix.vector([self.width / 2, self.height / 2])
-        self.contacts: Set[Tuple[float, float]] = set()
         self.show_contacts = show_contacts
-        if num_substeps is None:
-            num_substeps = JACOBI_SUBSTEPS
+        self.contacts: set[tuple[float, float]] = set()
+        self.solver = Solver(self.bodies, self.gravity, self.physics)
         self.num_substeps = num_substeps
         self.swept_slop = 0.25
         self.systems = {
@@ -75,6 +70,8 @@ class PhysicsEngine:
 
         for body in self.to_remove:
             self.bodies.remove(body)
+
+        self.solver = Solver(self.bodies, self.gravity, self.physics)
 
     def broad_phase(self):
         """Performs the broad phase of collision detection.
@@ -100,8 +97,7 @@ class PhysicsEngine:
             body.swept_aabb = AABB(max(swept.left, world.left), max(swept.top, world.top),
                                    min(swept.right, world.right), min(swept.bottom, world.bottom))
 
-    def solve_substep(self, bodies: List[RigidBody],
-                      pairs: List[Tuple[RigidBody, RigidBody]], sub_dt: float):
+    def solve_substep(self, pairs: list[tuple[RigidBody, RigidBody]], sub_dt: float):
         """Advance every dynamic body over the frame's sub-steps with the Jacobi XPBD solver.
 
         Description:
@@ -111,9 +107,7 @@ class PhysicsEngine:
             one velocity pass for friction and restitution.
         """
         contacts = self.contacts if self.show_contacts else None
-        jacobi.solve_group_substep(self.physics, bodies, pairs,
-                                   self.gravity, sub_dt, self.num_substeps,
-                                   contacts)
+        self.solver.solve(sub_dt, self.num_substeps, pairs, contacts)
 
     def step(self, dt: float):
         """Advances the simulation by a time step.
@@ -126,11 +120,10 @@ class PhysicsEngine:
 
         self.collisions.clear()
         self.broad_phase()
-        bodies = [body for body in self.bodies if body.physics]
         pairs = [(a, b) for a, b in self.collisions if a.physics or b.physics]
 
         sub_dt = dt / self.num_substeps
-        self.solve_substep(bodies, pairs, sub_dt)
+        self.solve_substep(pairs, sub_dt)
 
         self.remove_outside()
 
@@ -144,6 +137,7 @@ class PhysicsEngine:
         body.uid = self.next_uid
         self.next_uid += 1
         self.bodies.append(body)
+        self.solver = Solver(self.bodies, self.gravity, self.physics)
 
     def to_world(self, pos: Matrix) -> Matrix:
         """Converts a position from screen coordinates to world coordinates.

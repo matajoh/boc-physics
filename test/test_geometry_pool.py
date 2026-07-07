@@ -5,7 +5,7 @@ import random
 from bocpy import Matrix
 import pytest
 
-from bocphysics import xpbd
+from bocphysics.geometry import GeometryPool
 from bocphysics.bodies import Circle, Polygon
 
 
@@ -46,7 +46,7 @@ def test_geometry_pool_rows_match_transformed_geometry(seed):
     if not polys:
         pytest.skip("no polygons in this draw")
 
-    pool = xpbd.GeometryPool(bodies)
+    pool = GeometryPool(bodies)
     assert pool.geom_x.rows == len(polys)
     assert set(pool.row_of) == {p.uid for p in polys}
 
@@ -70,5 +70,5 @@ def test_geometry_pool_excludes_circles():
         body.uid = i
     bodies[0] = Circle.create(1.0, 2.0, (10, 10, 10))
     bodies[0].uid = 0
-    pool = xpbd.GeometryPool(bodies)
+    pool = GeometryPool(bodies)
     assert bodies[0].uid not in pool.row_of

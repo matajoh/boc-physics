@@ -11,7 +11,7 @@ import random
 
 from bocpy import Matrix
 
-from bocphysics import xpbd
+from bocphysics.geometry import GeometryPool
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import (batched_circle_circle, batched_circle_polygon,
                                    batched_polygon_polygon,
@@ -207,7 +207,7 @@ def test_batched_circle_polygon_matches_reference():
         pairs.append((make_circle(rng), make_polygon(rng)))
     for i, (_c, p) in enumerate(pairs):
         p.uid = i
-    geom = xpbd.GeometryPool([p for _, p in pairs])
+    geom = GeometryPool([p for _, p in pairs])
     batched = batched_circle_polygon(pairs, geom)
     hits = 0
     for (c, p), got in zip(pairs, batched):
@@ -227,7 +227,7 @@ def test_batched_polygon_polygon_matches_reference():
     polys = [p for pair in pairs for p in pair]
     for i, p in enumerate(polys):
         p.uid = i
-    geom = xpbd.GeometryPool(polys)
+    geom = GeometryPool(polys)
     batched = batched_polygon_polygon(pairs, geom)
     hits = 0
     for (a, b), got in zip(pairs, batched):

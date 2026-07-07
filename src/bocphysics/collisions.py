@@ -6,9 +6,9 @@ from typing import NamedTuple
 from bocpy import Matrix
 
 from .bodies import Circle, Polygon, RigidBody
+from .geometry import GeometryPool
 
-_MAX_VERTS = 8          # widest polygon in the scene; pads the batched vertex stack
-_BIG = 1.0e30           # sentinel depth for masked padding axes
+BIG = 1.0e30           # sentinel depth for masked padding axes
 
 
 class Collision(NamedTuple("Collision", [("normal", Matrix), ("depth", float)])):
@@ -85,7 +85,22 @@ def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
     return Collision(axis, depth.min())
 
 
-def batched_circle_circle(pairs):
+def detect_collision(a: RigidBody, b: RigidBody) -> Collision:
+    """Dispatch to the right narrow-phase test for the body pair."""
+    if isinstance(a, Circle):
+        if isinstance(b, Circle):
+            return intersect_circle_circle(a, b)
+
+        return intersect_circle_polygon(a, b)
+    elif isinstance(a, Polygon):
+        if isinstance(b, Circle):
+            collision = intersect_circle_polygon(b, a)
+            return collision.reverse() if collision else None
+
+        return intersect_polygon_polygon(a, b)
+
+
+def batched_circle_circle(pairs: list[tuple[RigidBody, RigidBody]]):
     """Resolve K circle-circle pairs at once; return one Collision-or-None per pair."""
     k = len(pairs)
     dx, dy, rsum = [0] * k, [0] * k, [0] * k
@@ -115,7 +130,7 @@ def batched_circle_circle(pairs):
     return out
 
 
-def batched_circle_polygon(pairs, geom):
+def batched_circle_polygon(pairs: list[tuple[RigidBody, RigidBody]], geom: GeometryPool):
     """Resolve K (circle, polygon) pairs at once; return one Collision-or-None per pair.
 
     geom is the shared GeometryPool: poly verts/normals are read as whole rows by
@@ -156,8 +171,8 @@ def batched_circle_polygon(pairs, geom):
     length.sqrt(in_place=True)
     nx = Matrix.concat([nxs, dfx.divide(length)], 1)
     ny = Matrix.concat([nys, dfy.divide(length)], 1)
-    pmin = Matrix.full((k, cap), _BIG)
-    pmax = Matrix.full((k, cap), -_BIG)
+    pmin = Matrix.full((k, cap), BIG)
+    pmax = Matrix.full((k, cap), -BIG)
     proj = Matrix.zeros((k, cap))
     for v in range(vmax):
         Matrix.multiply(nx, pvx[:, v], out=proj)
@@ -172,7 +187,7 @@ def batched_circle_polygon(pairs, geom):
     Matrix.subtract(pmax, cmin, out=pmax)
     depth = Matrix.where(Matrix.less(pmin, pmax), pmin, pmax)
     mask = Matrix.concat([valid, Matrix.ones((k, 1))], 1)
-    depth = Matrix.where(mask, depth, _BIG)
+    depth = Matrix.where(mask, depth, BIG)
     chosen = depth.argmin(axis=1)
     nsx = nx.take_along_axis(chosen, axis=1)
     nsy = ny.take_along_axis(chosen, axis=1)
@@ -190,7 +205,7 @@ def batched_circle_polygon(pairs, geom):
     return out
 
 
-def batched_polygon_polygon(pairs, geom):
+def batched_polygon_polygon(pairs: list[tuple[RigidBody, RigidBody]], geom: GeometryPool):
     """Resolve K (polygon, polygon) pairs at once; return one Collision-or-None per pair.
 
     geom is the shared GeometryPool. SAT axes are both polys' normals padded to
@@ -216,10 +231,10 @@ def batched_polygon_polygon(pairs, geom):
     bvx, bvy = geom.geom_x.take(rows_b, 0), geom.geom_y.take(rows_b, 0)
     nx = Matrix.concat([geom.norm_x.take(rows_a, 0), geom.norm_x.take(rows_b, 0)], 1)
     ny = Matrix.concat([geom.norm_y.take(rows_a, 0), geom.norm_y.take(rows_b, 0)], 1)
-    amin = Matrix.full((k, ncap), _BIG)
-    bmin = Matrix.full((k, ncap), _BIG)
-    amax = Matrix.full((k, ncap), -_BIG)
-    bmax = Matrix.full((k, ncap), -_BIG)
+    amin = Matrix.full((k, ncap), BIG)
+    bmin = Matrix.full((k, ncap), BIG)
+    amax = Matrix.full((k, ncap), -BIG)
+    bmax = Matrix.full((k, ncap), -BIG)
     proj = Matrix.zeros((k, ncap))
     for v in range(vmax):
         Matrix.multiply(nx, avx[:, v], out=proj)
@@ -234,7 +249,7 @@ def batched_polygon_polygon(pairs, geom):
 
     pen1, pen2 = amax - bmin, bmax - amin
     depth = Matrix.where(Matrix.less(pen1, pen2), pen1, pen2)
-    depth = Matrix.where(valid, depth, _BIG)
+    depth = Matrix.where(valid, depth, BIG)
     chosen = depth.argmin(axis=1)
     nsx = nx.take_along_axis(chosen, axis=1)
     nsy = ny.take_along_axis(chosen, axis=1)
@@ -254,16 +269,38 @@ def batched_polygon_polygon(pairs, geom):
     return out
 
 
-def detect_collision(a: RigidBody, b: RigidBody) -> Collision:
-    """Dispatch to the right narrow-phase test for the body pair."""
-    if isinstance(a, Circle):
-        if isinstance(b, Circle):
-            return intersect_circle_circle(a, b)
+def batched_detect_collisions(pairs: list[tuple[RigidBody, RigidBody]], geom: GeometryPool):
+    """Resolve circle-circle and circle-poly pairs in two batched SAT calls.
 
-        return intersect_circle_polygon(a, b)
-    elif isinstance(a, Polygon):
-        if isinstance(b, Circle):
-            collision = intersect_circle_polygon(b, a)
-            return collision.reverse() if collision else None
-
-        return intersect_polygon_polygon(a, b)
+    Returns a dict mapping each eligible pair's index to its Collision-or-None,
+    in the same orientation detect_collision would yield. geom is the shared
+    GeometryPool over every eligible polygon, reused by both batched SAT calls.
+    """
+    cc_idx, cc = [], []
+    cp_idx, cp, cp_flip = [], [], []
+    pp_idx, pp = [], []
+    for i, (a, b) in enumerate(pairs):
+        if isinstance(a, Circle) and isinstance(b, Circle):
+            cc_idx.append(i)
+            cc.append((a, b))
+        elif isinstance(a, Circle):
+            cp_idx.append(i)
+            cp.append((a, b))
+            cp_flip.append(False)
+        elif isinstance(b, Circle):
+            cp_idx.append(i)
+            cp.append((b, a))
+            cp_flip.append(True)
+        else:
+            pp_idx.append(i)
+            pp.append((a, b))
+    out = {}
+    for i, col in zip(cc_idx, batched_circle_circle(cc)) if cc else ():
+        out[i] = col
+    if cp:
+        for i, flip, col in zip(cp_idx, cp_flip, batched_circle_polygon(cp, geom)):
+            out[i] = col.reverse() if (flip and col is not None) else col
+    if pp:
+        for i, col in zip(pp_idx, batched_polygon_polygon(pp, geom)):
+            out[i] = col
+    return out

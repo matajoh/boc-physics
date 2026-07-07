@@ -1,12 +1,12 @@
 """Module providing basic circle and polygon bodies."""
 
 import math
-from typing import List, NamedTuple, Tuple, Union
+from typing import NamedTuple, Union
 
 from bocpy import Matrix
 
 
-Color = Tuple[int, int, int]
+Color = tuple[int, int, int]
 
 
 class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float), ("bottom", float)])):
@@ -172,8 +172,8 @@ class Polygon:
     """
 
     def __init__(self,
-                 vertices: List[Matrix],
-                 normals: List[Matrix],
+                 vertices: list[Matrix],
+                 normals: list[Matrix],
                  color: Color,
                  linear_velocity: Matrix = None,
                  angular_velocity: float = None,

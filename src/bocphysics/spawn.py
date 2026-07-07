@@ -11,7 +11,6 @@ Description:
     runtime spawns are routed through the queue.
 """
 import logging
-from typing import List
 
 from .bodies import RigidBody
 from .collisions import detect_collision
@@ -26,7 +25,7 @@ SPAWN_CLEARANCE = 0.05
 SPAWN_NUDGE_STEPS = 8
 
 
-def spawn_overlaps(body: RigidBody, bodies: List[RigidBody], clearance: float) -> bool:
+def spawn_overlaps(body: RigidBody, bodies: list[RigidBody], clearance: float) -> bool:
     """True when body penetrates any body in bodies by more than clearance."""
     for other in bodies:
         if other is body or body.aabb.disjoint(other.aabb):
@@ -78,13 +77,13 @@ class SpawnQueue:
         self.max_tries = max_tries
         self.clearance = clearance
         self.nudge_steps = nudge_steps
-        self.pending: List[List] = []
+        self.pending: list[list] = []
 
     def enqueue(self, body: RigidBody):
         """Queue a body to wait for an overlap-free frame."""
         self.pending.append([body, 0])
 
-    def process(self, bodies: List[RigidBody]) -> List[RigidBody]:
+    def process(self, bodies: list[RigidBody]) -> list[RigidBody]:
         """Admit queued bodies that now fit, age the rest, and return the admitted.
 
         Description:
@@ -96,8 +95,8 @@ class SpawnQueue:
             body that still clashes after max_tries frames is dropped with a log
             line instead of waiting forever.
         """
-        admitted: List[RigidBody] = []
-        still: List[List] = []
+        admitted: list[RigidBody] = []
+        still: list[list] = []
         for body, tries in self.pending:
             others = bodies + admitted
             if not spawn_overlaps(body, others, self.clearance):

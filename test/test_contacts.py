@@ -9,17 +9,38 @@ frames of a settling pile.
 import random
 
 from bocpy import Matrix
+import pytest
 
 from bocphysics.bodies import Circle, Polygon
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind
-from bocphysics.contacts import (find_contact_points,
+from bocphysics.contacts import (build_contacts, contact_velocity,
+                                 find_contact_points,
                                  find_contact_points_polygon_polygon,
+                                 relative_normal_velocity,
                                  scan_edge_points)
 from bocphysics.engine import PhysicsEngine
-from bocphysics.xpbd import GeometryPool
+from bocphysics.geometry import broad_box, GeometryPool
 
 FRAME = 1 / 60
+
+
+def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
+    """Build a dynamic circle at (x, y) with the given motion state."""
+    body = Circle.create(radius, 2.0, (200, 100, 50))
+    body.physics = True
+    body.move_to(Matrix.vector([x, y]))
+    body.linear_velocity = Matrix.vector([vx, vy])
+    body.angular_velocity = omega
+    return body
+
+
+def make_static_box(x, y, width=40.0, height=2.0):
+    """Build a static rectangle floor centred at (x, y)."""
+    floor = Polygon.create_rectangle(width, height, 1.0, (90, 90, 90), is_static=True)
+    floor.move_to(Matrix.vector([x, y]))
+    floor.physics = False
+    return floor
 
 
 def pool_for(*bodies) -> GeometryPool:
@@ -232,3 +253,97 @@ def test_batched_contact_points_match_reference():
         assert (rid0, rid1) == (id0, id1)
 
     assert hits > 0
+
+
+# --- contact kinematics --------------------------------------------------------------------------
+
+
+def test_contact_velocity_static_is_zero():
+    """A static body's material points are at rest."""
+    floor = make_static_box(0, 0)
+    velocity = contact_velocity(floor, Matrix.vector([1, 1]))
+    assert velocity.x == 0.0 and velocity.y == 0.0
+
+
+def test_contact_velocity_dynamic_matches_formula():
+    """Material-point velocity is v + omega x r = v + omega * perpendicular(r)."""
+    body = make_circle(0, 0, vx=3.0, vy=-1.0, omega=2.0)
+    # perpendicular([0, 2]) = [-2, 0]; omega * that = [-4, 0]; plus v = [-1, -1].
+    velocity = contact_velocity(body, Matrix.vector([0, 2]))
+    assert velocity.x == pytest.approx(-1.0)
+    assert velocity.y == pytest.approx(-1.0)
+
+
+def test_relative_normal_velocity_is_negative_when_approaching():
+    """Two bodies closing along the normal have negative relative normal velocity."""
+    a = make_circle(0, 0, vy=0.0)
+    b = make_circle(0, 1.5, vy=-5.0)
+    normal = Matrix.vector([0, 1])
+    rel = relative_normal_velocity(a, b, Matrix.vector([0, 0]),
+                                   Matrix.vector([0, 0]), normal)
+    assert rel == pytest.approx(-5.0)
+
+
+# --- contact construction ------------------------------------------------------------------------
+
+
+def test_build_contacts_skips_static_static_pairs():
+    """A pair where neither body is dynamic produces no constraints."""
+    a = make_static_box(0, 0, width=4, height=4)
+    b = make_static_box(1, 0, width=4, height=4)
+    assert build_contacts([(a, b)], None) == []
+
+
+def test_build_contacts_skips_non_penetrating_pairs():
+    """Far-apart bodies generate no constraints."""
+    a = make_circle(0, 0)
+    b = make_circle(50, 0)
+    assert build_contacts([(a, b)], None) == []
+
+
+def test_build_contacts_emits_penetrating_with_raw_bias():
+    """A penetrating pair yields constraints whose bias is the raw pre-solve normal velocity."""
+    a = make_circle(0, 0)
+    b = make_circle(1.5, 0, vx=-4.0)
+    constraints = build_contacts([(a, b)], None)
+    assert constraints
+    for constraint in constraints:
+        expected = relative_normal_velocity(
+            constraint.a, constraint.b, constraint.r_a, constraint.r_b, constraint.normal)
+        assert constraint.bias_velocity == pytest.approx(expected)
+        assert constraint.depth > 0
+
+
+def test_build_contacts_records_overlay_points():
+    """When an overlay set is given, the contact points are recorded into it."""
+    a = make_circle(0, 0)
+    b = make_circle(1.5, 0)
+    overlay = set()
+    build_contacts([(a, b)], overlay)
+    assert len(overlay) >= 1
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_broad_box_never_rejects_a_real_overlap(seed):
+    """The bounding-circle broad-phase cull keeps every pair that actually collides."""
+    rng = random.Random(seed)
+
+    def build():
+        """Build a random circle or rectangle placed near the origin."""
+        if rng.random() < 0.5:
+            body = Circle.create(rng.uniform(0.6, 1.4), 2.0, (200, 100, 50))
+        else:
+            body = Polygon.create_rectangle(rng.uniform(1.0, 2.4),
+                                            rng.uniform(1.0, 2.4), 2.0, (50, 120, 200))
+        body.physics = True
+        body.move_to(Matrix.vector([rng.uniform(-2, 2), rng.uniform(-2, 2)]))
+        body.rotate_to(rng.uniform(0, 6.28))
+        return body
+
+    a, b = build(), build()
+    a.uid, b.uid = 0, 1
+    box_a = broad_box(a)
+    box_b = broad_box(b)
+    collision = detect_collision(a, b)
+    if collision is not None and collision.depth > 0:
+        assert not box_a.disjoint(box_b)

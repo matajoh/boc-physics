@@ -1,13 +1,11 @@
 """Module providing broad-phase collision detection strategies."""
 
-from typing import List, Tuple
-
 from .bodies import AABB, RigidBody
 from .config import DetectionKind
 from .quadtree import QuadTree
 
 
-Collisions = List[Tuple[RigidBody, RigidBody]]
+Collisions = list[tuple[RigidBody, RigidBody]]
 
 
 class Detection:
@@ -18,7 +16,7 @@ class Detection:
         self.kind = kind
         self.box = box
 
-    def find_all_intersections(self, bodies: List[RigidBody], collisions: Collisions):
+    def find_all_intersections(self, bodies: list[RigidBody], collisions: Collisions):
         """Find all colliding pairs using the configured algorithm."""
         match self.kind:
             case DetectionKind.QUADTREE:
@@ -28,7 +26,7 @@ class Detection:
             case _:
                 raise ValueError("Invalid detection kind")
 
-    def find_all_intersections_quadtree(self, bodies: List[RigidBody], collisions: Collisions):
+    def find_all_intersections_quadtree(self, bodies: list[RigidBody], collisions: Collisions):
         """Find all colliding pairs using a quadtree spatial index."""
         quadtree = QuadTree(self.box)
         for body in bodies:
@@ -37,7 +35,7 @@ class Detection:
 
         quadtree.find_all_intersections(collisions)
 
-    def find_all_intersections_basic(self, bodies: List[RigidBody], collisions: Collisions):
+    def find_all_intersections_basic(self, bodies: list[RigidBody], collisions: Collisions):
         """Find all colliding pairs with a brute-force pairwise scan."""
         for i in range(0, len(bodies)):
             a = bodies[i]

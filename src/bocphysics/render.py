@@ -6,7 +6,7 @@ never imports pyglet directly.
 """
 
 import math
-from typing import Tuple, Union
+from typing import Union
 
 from bocpy import Matrix
 import webcolors
@@ -14,8 +14,8 @@ import webcolors
 from .bodies import Circle
 
 
-Color = Union[str, Tuple[int, int, int], Tuple[int, int, int, int]]
-RGBA = Tuple[int, int, int, int]
+Color = Union[str, tuple[int, int, int], tuple[int, int, int, int]]
+RGBA = tuple[int, int, int, int]
 
 BLACK = (0, 0, 0, 255)
 YELLOW = (255, 255, 0, 255)
@@ -56,14 +56,14 @@ class Camera:
         self.scale = scale
         self.height = height
 
-    def __call__(self, point: Matrix) -> Tuple[float, float]:
+    def __call__(self, point: Matrix) -> tuple[float, float]:
         """Project a world point to a screen (x, y) pixel coordinate."""
         x = (point.x + self.center.x) * self.scale
         y = (point.y + self.center.y) * self.scale
         return x, self.height - y
 
 
-def draw_body(body, batch, project: Camera, fill_group, line_group, grayscale=False) -> Tuple:
+def draw_body(body, batch, project: Camera, fill_group, line_group, grayscale=False) -> tuple:
     """Draw one body into the batch by type, returning the shapes to keep alive."""
     from pyglet import shapes
     color = to_grayscale(body.color) if grayscale else to_rgba(body.color)
