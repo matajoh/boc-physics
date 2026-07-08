@@ -8,7 +8,7 @@ from bocpy import Matrix
 from .bodies import AABB, Polygon, RigidBody
 
 
-def rotate(v: Matrix, angle: float) -> Matrix:
+def rotate(v: Matrix, angle: Matrix) -> Matrix:
     """Rotate a 2D vector CCW by angle (radians) via the perpendicular basis.
 
     Description:
@@ -17,7 +17,7 @@ def rotate(v: Matrix, angle: float) -> Matrix:
         is a Matrix.vector (circle) or a manifold row slice (polygon). It never
         touches v.x / v.y, which a slice does not expose.
     """
-    return v * math.cos(angle) + v.perpendicular() * math.sin(angle)
+    return v * angle.cos() + v.perpendicular() * angle.sin()
 
 
 ZEROVEC2 = Matrix.zeros((1, 2))
@@ -118,8 +118,8 @@ class GeometryPool:
     def sync(self):
         """Refresh world pose from the polygons' current scalar transforms."""
         for i, p in enumerate(self.polys):
-            self.cos[i] = math.cos(p.angle)
-            self.sin[i] = math.sin(p.angle)
+            self.cos[i] = p.angle.cos()
+            self.sin[i] = p.angle.sin()
             self.px[i] = p.position.x
             self.py[i] = p.position.y
         self._apply_pose()
@@ -129,8 +129,8 @@ class GeometryPool:
         rows = len(self.polys)
         if rows == 0:
             return
-        cos = Matrix(rows, 1, self.cos)
-        sin = Matrix(rows, 1, self.sin)
+        cos = Matrix.concat(self.cos)
+        sin = Matrix.concat(self.sin)
         px = Matrix(rows, 1, self.px)
         py = Matrix(rows, 1, self.py)
 

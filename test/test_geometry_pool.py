@@ -22,7 +22,7 @@ def build_body(state):
     body.physics = True
     body.move_to(Matrix.vector([x, y])).rotate_to(ang)
     body.linear_velocity = Matrix.vector([vx, vy])
-    body.angular_velocity = spin
+    body.angular_velocity.x = spin
     return body
 
 

@@ -38,7 +38,7 @@ def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
     body.physics = True
     body.move_to(Matrix.vector([x, y]))
     body.linear_velocity = Matrix.vector([vx, vy])
-    body.angular_velocity = omega
+    body.angular_velocity.x = omega
     return body
 
 
@@ -137,7 +137,7 @@ def make_random_body(rng: random.Random):
     body.move_to(Matrix.vector([rng.uniform(-12, 12), rng.uniform(-12, 6)]))
     body.rotate_to(rng.uniform(0, 6.28))
     body.linear_velocity = Matrix.vector([rng.uniform(-5, 5), rng.uniform(-5, 5)])
-    body.angular_velocity = rng.uniform(-3, 3)
+    body.angular_velocity.x = Matrix.uniform(-3, 3)
     return body
 
 
@@ -168,7 +168,7 @@ def test_integrate_block_is_bit_exact_with_per_body_step(seed):
         body.physics = True
         body.move_to(Matrix.vector([x, y])).rotate_to(ang)
         body.linear_velocity = Matrix.vector([vx, vy])
-        body.angular_velocity = spin
+        body.angular_velocity.x = spin
         return body
 
     reference = [build(s) for s in states]
@@ -189,9 +189,9 @@ def test_integrate_block_is_bit_exact_with_per_body_step(seed):
         if isinstance(r, Polygon):
             r.update_transform()
             c.update_transform()
-            for i in range(r.transformed_vertices_block_.rows):
-                assert r.transformed_vertices_block_[i, 0] == c.transformed_vertices_block_[i, 0]
-                assert r.transformed_vertices_block_[i, 1] == c.transformed_vertices_block_[i, 1]
+            for i in range(r.transformed_vertices_.rows):
+                assert r.transformed_vertices_[i, 0] == c.transformed_vertices_[i, 0]
+                assert r.transformed_vertices_[i, 1] == c.transformed_vertices_[i, 1]
 
 
 def test_integrate_block_handles_empty_region():
@@ -258,7 +258,7 @@ def total_ke(bodies):
     energy = 0.0
     for b in bodies:
         energy += 0.5 * b.mass * b.linear_velocity.magnitude_squared()
-        energy += 0.5 * b.inertia * b.angular_velocity**2
+        energy += 0.5 * b.inertia * b.angular_velocity.magnitude_squared()
     return energy
 
 
@@ -375,8 +375,8 @@ def run_drop(frames=180):
     box = Polygon.create_rectangle(2.0, 2.0, 1.0, (50, 100, 200))
     box.physics = True
     box.move_to(Matrix.vector([0, 0]))
-    box.linear_velocity = Matrix.vector([0, 0])
-    box.angular_velocity = 0.0
+    box.linear_velocity[:] = 0
+    box.angular_velocity.x = 0
     pairs = [(box, floor)]
     for uid, body in enumerate([floor, box]):
         body.uid = uid
@@ -415,8 +415,8 @@ def measured_restitution(restitution, frames=150):
     ball = Circle.create(0.5, 2.0, (200, 100, 50))
     ball.physics = True
     ball.move_to(Matrix.vector([0, 0]))
-    ball.linear_velocity = Matrix.vector([0, 0])
-    ball.angular_velocity = 0.0
+    ball.linear_velocity[:] = 0
+    ball.angular_velocity.x = 0.0
     pairs = [(ball, floor)]
     for uid, body in enumerate([floor, ball]):
         body.uid = uid
@@ -446,8 +446,8 @@ def test_random_pile_stays_finite_and_bounded(seed):
         box = Polygon.create_rectangle(2.0, 2.0, 1.0, (50, 100, 200))
         box.physics = True
         box.move_to(Matrix.vector([rng.uniform(-0.3, 0.3), -3.0 * level]))
-        box.linear_velocity = Matrix.vector([0, 0])
-        box.angular_velocity = 0.0
+        box.linear_velocity[:] = 0
+        box.angular_velocity.x = 0
         boxes.append(box)
 
     pairs = [(boxes[i], boxes[j]) for i in range(len(boxes)) for j in range(i + 1, len(boxes))]
@@ -460,5 +460,5 @@ def test_random_pile_stays_finite_and_bounded(seed):
 
     for box in boxes:
         assert math.isfinite(box.position.x) and math.isfinite(box.position.y)
-        assert math.isfinite(box.angle)
+        assert math.isfinite(box.angle.x)
         assert box.position.y < 13.0

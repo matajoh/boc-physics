@@ -107,7 +107,7 @@ def make_body(rng):
 def place(body, x, y, angle):
     """Move a freshly built body to an absolute pose."""
     body.move_to(Matrix.vector([x, y]))
-    body.angle = angle
+    body.rotate_to(angle)
     body.update_needed_ = True
     return body
 

@@ -1,12 +1,18 @@
 """Module providing basic circle and polygon bodies."""
 
+from enum import IntEnum
 import math
 from typing import NamedTuple, Union
 
-from bocpy import Matrix
+from bocpy import Cown, Matrix
 
 
 Color = tuple[int, int, int]
+
+
+class BodyKind(IntEnum):
+    Circle = 0
+    Polygon = 1
 
 
 class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float), ("bottom", float)])):
@@ -82,7 +88,8 @@ class Circle:
                  inv_inertia: float = 0):
         """Create a circle from its radius, colour, and mass properties."""
         self.position = Matrix.vector([0, 0])
-        self.angle = 0
+        self.angle = Matrix.vector([0])
+        self.kind = BodyKind.Circle
         self.uid = None
         self.radius = radius
         self.color = color
@@ -92,12 +99,19 @@ class Circle:
         self.inv_inertia = inv_inertia
         if linear_velocity is not None:
             self.linear_velocity = linear_velocity
-            self.angular_velocity = angular_velocity
+            self.angular_velocity = Matrix.vector([angular_velocity])
 
+        self.cown = None
         self.size = radius * 2
         self.aabb_ = AABB(0, 0, 0, 0)
         self.swept_aabb = self.aabb_
         self.update_needed_ = True
+
+    def share(self):
+        """Prepare this circle to be shared across behaviors."""
+        self.cown = Cown((int(self.kind), self.position, self.angle,
+                          self.linear_velocity, self.angular_velocity,
+                          self.radius, self.inv_mass, self.inv_inertia))
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the circle's velocity and position over the time step."""
@@ -108,19 +122,24 @@ class Circle:
 
     def move_to(self, pos: Matrix) -> "Circle":
         """Move the circle to an absolute position and return it."""
-        self.position = pos.copy()
+        self.position[:] = pos
         self.update_needed_ = True
         return self
 
     def move(self, delta: Matrix) -> "Circle":
         """Move the circle by a relative delta and return it."""
-        self.position = self.position + delta
+        self.position += delta
         self.update_needed_ = True
         return self
 
     def rotate_to(self, angle: float) -> "Circle":
         """Rotate the circle to an absolute angle and return it."""
-        self.angle = angle
+        self.angle.x = angle
+        self.update_needed_ = True
+        return self
+
+    def rotate(self, delta: Union[float, Matrix]) -> "Polygon":
+        self.angle += delta
         self.update_needed_ = True
         return self
 
@@ -182,8 +201,9 @@ class Polygon:
                  inertia: float = float("inf"),
                  inv_inertia: float = 0):
         """Create a polygon from its vertices, normals, colour, and mass properties."""
+        self.kind = BodyKind.Polygon
         self.position = Matrix.vector([0, 0])
-        self.angle = 0
+        self.angle = Matrix.vector([0])
         self.uid = None
         self.vertices = vertices
         self.normals = normals
@@ -195,38 +215,50 @@ class Polygon:
         self.inv_inertia = inv_inertia
         if linear_velocity is not None:
             self.linear_velocity = linear_velocity
-            self.angular_velocity = angular_velocity
+            self.angular_velocity = Matrix.vector([angular_velocity])
 
+        self.cown = None
         self.aabb_ = AABB(0, 0, 0, 0)
         self.swept_aabb = self.aabb_
-        self.vertices_block_ = Matrix(len(vertices), 2, [c for v in vertices for c in (v.x, v.y)])
-        self.normals_block_ = Matrix(len(normals), 2, [c for n in normals for c in (n.x, n.y)])
-        self.transformed_vertices_block_ = self.vertices_block_.copy()
-        self.transformed_normals_block_ = self.normals_block_.copy()
+        self.vertices = Matrix.concat(vertices)
+        self.normals = Matrix.concat(normals)
+        self.transformed_vertices_ = self.vertices.copy()
+        self.transformed_normals_ = self.normals.copy()
         self.update_needed_ = True
+
+    def share(self):
+        self.cown = Cown((int(self.kind), self.position, self.angle,
+                          self.linear_velocity, self.angular_velocity,
+                          self.vertices, self.normals,
+                          self.inv_mass, self.inv_inertia))
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the polygon's velocity and position over the time step."""
-        self.linear_velocity = self.linear_velocity + gravity * dt
-        self.position = self.position + self.linear_velocity * dt
-        self.angle = self.angle + self.angular_velocity * dt
+        self.linear_velocity.scaled_add(dt, gravity, in_place=True)
+        self.position.scaled_add(dt, self.linear_velocity, in_place=True)
+        self.angle.scaled_add(dt, self.angular_velocity, in_place=True)
         self.update_needed_ = True
 
     def move_to(self, pos: Matrix) -> "Polygon":
         """Move the polygon to an absolute position and return it."""
-        self.position = pos.copy()
+        self.position[:] = pos
         self.update_needed_ = True
         return self
 
     def move(self, delta: Matrix) -> "Polygon":
         """Move the polygon by a relative delta and return it."""
-        self.position = self.position + delta
+        self.position += delta
         self.update_needed_ = True
         return self
 
     def rotate_to(self, angle: float) -> "Polygon":
         """Rotate the polygon to an absolute angle and return it."""
-        self.angle = angle
+        self.angle.x = angle
+        self.update_needed_ = True
+        return self
+
+    def rotate(self, delta: Union[float, Matrix]) -> "Polygon":
+        self.angle += delta
         self.update_needed_ = True
         return self
 
@@ -244,14 +276,15 @@ class Polygon:
             return
 
         self.update_needed_ = False
-        cos_angle = math.cos(self.angle)
-        sin_angle = math.sin(self.angle)
+        cos_angle = self.angle.cos().x
+        sin_angle = self.angle.sin().x
         rot_t = Matrix(2, 2, [cos_angle, sin_angle, -sin_angle, cos_angle])
-        self.transformed_normals_block_ = self.normals_block_ @ rot_t
-        self.transformed_vertices_block_ = self.vertices_block_ @ rot_t + self.position
+        Matrix.matmul(self.normals, rot_t, out=self.transformed_normals_)
+        Matrix.matmul(self.vertices, rot_t, out=self.transformed_vertices_)
+        self.transformed_vertices_ += self.position
 
-        low = self.transformed_vertices_block_.min(axis=0)
-        high = self.transformed_vertices_block_.max(axis=0)
+        low = self.transformed_vertices_.min(axis=0)
+        high = self.transformed_vertices_.max(axis=0)
         self.aabb_ = AABB(low.x, low.y, high.x, high.y)
 
     def to_dict(self):
@@ -272,13 +305,13 @@ class Polygon:
     def transformed_vertices(self) -> Matrix:
         """Get the polygon's vertices in world space as an (N x 2) block."""
         self.update_transform()
-        return self.transformed_vertices_block_
+        return self.transformed_vertices_
 
     @property
     def transformed_normals(self) -> Matrix:
         """Get the polygon's edge normals in world space as an (N x 2) block."""
         self.update_transform()
-        return self.transformed_normals_block_
+        return self.transformed_normals_
 
     @staticmethod
     def create_rectangle(width: float, height: float, density: float,

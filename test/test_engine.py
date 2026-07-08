@@ -192,7 +192,7 @@ def test_golden_master_state_is_reproducible():
     for body, (x, y, angle) in zip(dynamic, GOLDEN_STATE):
         assert body.position.x == pytest.approx(x, abs=1e-6)
         assert body.position.y == pytest.approx(y, abs=1e-6)
-        assert body.angle == pytest.approx(angle, abs=1e-6)
+        assert body.angle.x == pytest.approx(angle, abs=1e-6)
 
 
 def test_add_body_assigns_unique_uids():

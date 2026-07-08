@@ -31,7 +31,7 @@ def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
     body.physics = True
     body.move_to(Matrix.vector([x, y]))
     body.linear_velocity = Matrix.vector([vx, vy])
-    body.angular_velocity = omega
+    body.angular_velocity.x = omega
     return body
 
 
@@ -63,7 +63,7 @@ def overlapping_box_pair(rng: random.Random):
     a.uid, b.uid = 11, 22
     a.move_to(Matrix.vector([0, 0]))
     b.move_to(Matrix.vector([rng.uniform(-2, 2), rng.uniform(-2, 2)]))
-    a.angle, b.angle = rng.uniform(0, 0.4), rng.uniform(0, 0.4)
+    a.angle.x, b.angle.x = rng.uniform(0, 0.4), rng.uniform(0, 0.4)
     a.update_needed_ = b.update_needed_ = True
     collision = detect_collision(a, b)
     if collision is None:
@@ -228,7 +228,7 @@ def random_polygon(rng: random.Random):
         body = Polygon.create_regular_polygon(rng.choice([3, 5, 6]),
                                               rng.uniform(0.5, 1.3), 1.0,
                                               (90, 90, 180))
-    body.angle = rng.uniform(-3.14159, 3.14159)
+    body.angle.x = rng.uniform(-3.14159, 3.14159)
     return body
 
 

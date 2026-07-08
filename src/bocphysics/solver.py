@@ -86,9 +86,8 @@ class Solver:
             if count == 0.0:
                 continue
 
-            delta = self.pos_acc[row, :2]
-            body.move(delta * (1.0 / count))
-            body.rotate_to(body.angle + self.pos_acc[row, 2] / count)
+            body.move(self.pos_acc[row, :2] / count)
+            body.rotate(self.pos_acc[row, 2] / count)
 
     def accumulate_positions(self) -> list[float]:
         """Accumulate every contact's normal + static-friction position correction, frozen-pose.
@@ -151,7 +150,7 @@ class Solver:
 
     def snapshot_poses(self) -> list[Matrix]:
         """Record each body's pose as (position copy, angle) so derive_velocities reads no aliased Matrix."""
-        return [Matrix.concat([body.position, [body.angle]], axis=1) for body in self.bodies]
+        return [Matrix.concat([body.position, body.angle], axis=1) for body in self.bodies]
 
     def integrate_block(self, dt: float):
         """Integrate every dynamic body in one batched semi-implicit Euler step.
@@ -168,17 +167,17 @@ class Solver:
 
         velocity = Matrix.concat([b.linear_velocity for b in self.bodies])
         position = Matrix.concat([b.position for b in self.bodies])
-        angle = Matrix(n, 1, [b.angle for b in self.bodies])
-        spin = Matrix(n, 1, [b.angular_velocity for b in self.bodies])
+        angle = Matrix.concat([b.angle for b in self.bodies])
+        spin = Matrix.concat([b.angular_velocity for b in self.bodies])
 
         velocity += self.gravity * dt
         position.scaled_add(dt, velocity, in_place=True)
         angle.scaled_add(dt, spin, in_place=True)
 
         for i, body in enumerate(self.bodies):
-            body.linear_velocity = velocity[i]
-            body.position = position[i]
-            body.angle = angle[i, 0]
+            body.linear_velocity[:] = velocity[i]
+            body.position[:] = position[i]
+            body.angle.x = angle[i]
             body.update_needed_ = True
 
     def apply_velocities(self):
@@ -191,5 +190,5 @@ class Solver:
             if count == 0.0:
                 continue
             dlin = self.vel_acc[row, :2]
-            body.linear_velocity = body.linear_velocity + dlin * (1.0 / count)
-            body.angular_velocity = body.angular_velocity + self.vel_acc[row, 2] / count
+            body.linear_velocity += dlin * (1.0 / count)
+            body.angular_velocity += self.vel_acc[row, 2] / count

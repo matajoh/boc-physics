@@ -83,8 +83,11 @@ class Physics(NamedTuple):
                           previous: list[tuple[Matrix, float]], h: float):
         """Set each body's velocity from its position delta over the sub-step (the XPBD velocity update)."""
         for body, prev in zip(bodies, previous):
-            body.linear_velocity = (body.position - prev[0, :2]) / h
-            body.angular_velocity = (body.angle - prev[0, 2]) / h
+            Matrix.subtract(body.position, prev[0, :2], out=body.linear_velocity)
+            body.linear_velocity /= h
+
+            Matrix.subtract(body.angle, prev[0, 2], out=body.angular_velocity)
+            body.angular_velocity /= h
 
     def position_update(self, constraint: ContactConstraint,
                         previous: list[tuple[Matrix, float]]) -> tuple[ConstraintUpdate, float]:

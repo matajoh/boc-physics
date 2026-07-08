@@ -92,7 +92,7 @@ def total_kinetic_energy(engine) -> float:
     for body in engine.bodies:
         if body.physics:
             energy += 0.5 * body.mass * body.linear_velocity.magnitude_squared()
-            energy += 0.5 * body.inertia * body.angular_velocity**2
+            energy += 0.5 * body.inertia * body.angular_velocity.magnitude_squared()
 
     return energy
 

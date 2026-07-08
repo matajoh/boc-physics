@@ -22,7 +22,7 @@ def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
     body.physics = True
     body.move_to(Matrix.vector([x, y]))
     body.linear_velocity = Matrix.vector([vx, vy])
-    body.angular_velocity = omega
+    body.angular_velocity.x = omega
     return body
 
 
@@ -102,4 +102,4 @@ def test_derive_velocities_from_pose_delta():
     Physics.derive_velocities([body], previous, SUB_DT)
     assert body.linear_velocity.x == pytest.approx(0.1 / SUB_DT)
     assert body.linear_velocity.y == pytest.approx(0.2 / SUB_DT)
-    assert body.angular_velocity == pytest.approx(0.05 / SUB_DT)
+    assert body.angular_velocity.x == pytest.approx(0.05 / SUB_DT)
