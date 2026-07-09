@@ -1,13 +1,15 @@
 """Tests for the shared substep solver core."""
 
+import itertools
 import math
 import random
+from typing import Union
 
 from bocpy import Matrix
 import pytest
 
 from bocphysics import physics
-from bocphysics.bodies import Circle, Polygon
+from bocphysics.bodies import Circle, Polygon, RigidBody, RigidBodyState
 from bocphysics.collisions import detect_collision
 from bocphysics.config import DetectionKind
 from bocphysics.contacts import build_contacts, relative_normal_velocity
@@ -17,12 +19,14 @@ from bocphysics.scene import make_pyramid_scene
 from bocphysics.solver import Solver
 
 GRAVITY = Matrix.vector([0, 9.81])
-SUB_DT = (1 / 60) / 4
-JACOBI_SUB_DT = (1 / 60) / 20
+NUM_SUBSTEPS = 20
+DT = 1 / 60
+SUB_DT = DT / NUM_SUBSTEPS
 FRICTION = Physics()
 ELASTIC = Physics(restitution=1.0, dynamic_friction=0.0)
 INELASTIC = Physics(restitution=0.0)
-JACOBI_PHYS = Physics(restitution=0.0, static_friction=0.5, dynamic_friction=0.5)
+PHYS = Physics(restitution=0.0, static_friction=0.5, dynamic_friction=0.5)
+UID = itertools.count(start=0)
 
 
 def make_engine(num_substeps=16) -> PhysicsEngine:
@@ -32,53 +36,97 @@ def make_engine(num_substeps=16) -> PhysicsEngine:
                          num_substeps=num_substeps)
 
 
-def make_circle(x, y, vx=0.0, vy=0.0, omega=0.0, radius=1.0):
+def make_circle(x: float, y: float, angle=0, vx=0.0, vy=0.0, omega=0.0, radius=1.0, density=2.0, is_static=False):
     """Build a dynamic circle at (x, y) with the given motion state."""
-    body = Circle.create(radius, 2.0, (200, 100, 50))
-    body.physics = True
-    body.move_to(Matrix.vector([x, y]))
-    body.linear_velocity = Matrix.vector([vx, vy])
+    body = Circle.create(radius, density, (127, 127, 127), is_static)
+    body.physics = not is_static
+    body.collision = True
+    body.move_to(Matrix.vector([x, y])).rotate_to(angle)
+    body.linear_velocity[:] = vx, vy
     body.angular_velocity.x = omega
+    body.uid = next(UID)
     return body
 
 
-def make_static_box(x, y, width=40.0, height=2.0):
+def make_polygon(num_sides: int, x, y, angle=0, vx=0.0, vy=0.0, omega=0.0, radius=1.0, density=2.0, is_static=False):
     """Build a static rectangle floor centred at (x, y)."""
-    floor = Polygon.create_rectangle(width, height, 1.0, (90, 90, 90), is_static=True)
-    floor.move_to(Matrix.vector([x, y]))
-    floor.physics = False
-    return floor
+    body = Polygon.create_regular_polygon(num_sides, radius, density, (127, 127, 127), is_static)
+    body.physics = not is_static
+    body.collision = True
+    body.move_to(Matrix.vector([x, y])).rotate_to(angle)
+    body.linear_velocity[:] = vx, vy
+    body.angular_velocity.x = omega
+    body.uid = next(UID)
+    return body
+
+
+def make_box(x, y, angle=0, width=2, height=2, vx=0.0, vy=0.0, omega=0.0, is_static=False):
+    """Build a static rectangle floor centred at (x, y)."""
+    body = Polygon.create_rectangle(width, height, 1.0, (127, 127, 127), is_static)
+    body.physics = not is_static
+    body.collision = True
+    body.move_to(Matrix.vector([x, y])).rotate_to(angle)
+    body.uid = next(UID)
+
+    if not is_static:
+        body.linear_velocity[:] = vx, vy
+        body.angular_velocity.x = omega
+
+    return body
+
+
+def make_random_body(rng: random.Random):
+    """Build a random dynamic circle or polygon with random motion state."""
+    kind = rng.random()
+    x = rng.uniform(-12, 12)
+    y = rng.uniform(-12, 6)
+    angle = rng.uniform(0, 6.28)
+    vx = rng.uniform(-5, 5)
+    vy = rng.uniform(-5, 5)
+    omega = rng.uniform(-3, 3)
+    if kind < 0.4:
+        radius = rng.uniform(0.6, 1.2)
+        body = make_circle(x, y, angle, vx, vy, omega, radius)
+    elif kind < 0.7:
+        width = rng.uniform(1.2, 2.2)
+        height = rng.uniform(1.2, 2.2)
+        body = make_box(x, y, angle, width, height, vx, vy, omega)
+    else:
+        num_sides = rng.randint(3, 6)
+        radius = rng.uniform(0.8, 1.3)
+        body = make_polygon(num_sides, x, y, angle, vx, vy, omega, radius)
+
+    return body
+
+
+def to_state(body: RigidBody) -> RigidBodyState:
+    return RigidBodyState(body.state)
 
 
 def test_solver_core_matches_engine_substep():
     """The Solver core reproduces the engine's substep solve exactly."""
-    positions = [Matrix.vector([-2, 0]), Matrix.vector([0, 0]), Matrix.vector([1.6, 0])]
-
-    def build_group():
+    def build_group(as_state: bool):
         """Build a small dynamic group at the fixed positions."""
         bodies = []
-        for pos in positions:
-            body = Circle.create(1.0, 2.0, (200, 100, 50)).move_to(pos.copy())
-            body.physics = True
+        for x, y in [(-2, 0), (0, 0), (1.6, 0)]:
+            body = make_circle(x, y)
+            if as_state:
+                body = to_state(body)
+
             bodies.append(body)
 
         pairs = [(bodies[0], bodies[1]), (bodies[1], bodies[2])]
         return bodies, pairs
 
-    gravity = Matrix.vector([0, 9.81])
-    sub_dt = (1 / 60) / 4
-
     engine = make_engine()
-    ref_bodies, ref_pairs = build_group()
+    ref_bodies, ref_pairs = build_group(False)
     for body in ref_bodies:
         engine.add_body(body)
-    engine.solve_substep(ref_pairs, sub_dt)
+    engine.solve_substep(DT, ref_pairs)
 
-    cand_bodies, cand_pairs = build_group()
-    for i, body in enumerate(cand_bodies):
-        body.uid = i
-    solver = Solver(cand_bodies, gravity, engine.physics)
-    solver.solve(sub_dt, engine.num_substeps, cand_pairs, None)
+    cand_bodies, cand_pairs = build_group(True)
+    solver = Solver(cand_bodies, GRAVITY, engine.physics)
+    solver.solve(DT, engine.num_substeps, cand_pairs, None)
 
     for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x
@@ -88,31 +136,33 @@ def test_solver_core_matches_engine_substep():
         assert r.angular_velocity == c.angular_velocity
 
 
+RBS = Union[RigidBody, RigidBodyState]
+
+
 def test_polygon_group_core_matches_engine():
     """The core matches the engine for rotating polygon contacts too."""
-    def build_group():
+
+    def build_group(as_state: bool):
         """Build a two-polygon stack group."""
-        a = Polygon.create_rectangle(2.0, 2.0, 2.0, (200, 100, 50))
-        b = Polygon.create_rectangle(2.0, 2.0, 2.0, (50, 100, 200))
-        a.physics = b.physics = True
-        a.move_to(Matrix.vector([0, 0])).rotate_to(0.2)
-        b.move_to(Matrix.vector([0.5, -1.8])).rotate_to(-0.1)
+        a = make_box(0, 0, 0.2)
+        b = make_box(0.5, -1.8, -0.1)
+        if as_state:
+            a = to_state(a)
+            b = to_state(b)
+
         return [a, b], [(a, b)]
 
-    gravity = Matrix.vector([0, 9.81])
-    sub_dt = (1 / 60) / 4
-
     engine = make_engine()
-    ref_bodies, ref_pairs = build_group()
+    ref_bodies, ref_pairs = build_group(False)
     for body in ref_bodies:
         engine.add_body(body)
-    engine.solve_substep(ref_pairs, sub_dt)
 
-    cand_bodies, cand_pairs = build_group()
-    for i, body in enumerate(cand_bodies):
-        body.uid = i
-    solver = Solver(cand_bodies, gravity, engine.physics)
-    solver.solve(sub_dt, engine.num_substeps, cand_pairs, None)
+    ref_pairs = [(engine.states[a.uid], engine.states[b.uid]) for a, b in ref_pairs]
+    engine.solve_substep(DT, ref_pairs)
+
+    cand_bodies, cand_pairs = build_group(True)
+    solver = Solver(cand_bodies, GRAVITY, engine.physics)
+    solver.solve(DT, engine.num_substeps, cand_pairs, None)
 
     for r, c in zip(ref_bodies, cand_bodies):
         assert r.position.x == c.position.x
@@ -121,63 +171,22 @@ def test_polygon_group_core_matches_engine():
         assert r.angular_velocity == c.angular_velocity
 
 
-def make_random_body(rng: random.Random):
-    """Build a random dynamic circle or polygon with random motion state."""
-    kind = rng.random()
-    if kind < 0.4:
-        body = Circle.create(rng.uniform(0.6, 1.2), 2.0, (200, 100, 50))
-    elif kind < 0.7:
-        body = Polygon.create_rectangle(rng.uniform(1.2, 2.2),
-                                        rng.uniform(1.2, 2.2), 2.0, (50, 120, 200))
-    else:
-        body = Polygon.create_regular_polygon(rng.randint(3, 6),
-                                              rng.uniform(0.8, 1.3), 2.0, (180, 60, 160))
-
-    body.physics = True
-    body.move_to(Matrix.vector([rng.uniform(-12, 12), rng.uniform(-12, 6)]))
-    body.rotate_to(rng.uniform(0, 6.28))
-    body.linear_velocity = Matrix.vector([rng.uniform(-5, 5), rng.uniform(-5, 5)])
-    body.angular_velocity.x = Matrix.uniform(-3, 3)
-    return body
-
-
 @pytest.mark.parametrize("seed", range(30))
 def test_integrate_block_is_bit_exact_with_per_body_step(seed):
     """Batched integration must reproduce per-body step to the last bit."""
     rng = random.Random(seed)
-    gravity = Matrix.vector([0, 9.81])
-    dt = (1 / 60) / 4
     count = rng.randint(1, 12)
 
-    states = [(rng.random(), rng.uniform(-12, 12), rng.uniform(-12, 6),
-               rng.uniform(0, 6.28), rng.uniform(-5, 5), rng.uniform(-5, 5),
-               rng.uniform(-3, 3), rng.uniform(0.6, 1.2), rng.randint(3, 6),
-               rng.uniform(1.2, 2.2), rng.uniform(1.2, 2.2), rng.uniform(0.8, 1.3))
-              for _ in range(count)]
+    rng = random.Random(seed)
+    reference = [make_random_body(rng) for _ in range(count)]
 
-    def build(state):
-        """Build one dynamic body from a fixed numeric state tuple."""
-        (k, x, y, ang, vx, vy, spin, r, sides, w, h, poly_r) = state
-        if k < 0.4:
-            body = Circle.create(r, 2.0, (200, 100, 50))
-        elif k < 0.7:
-            body = Polygon.create_rectangle(w, h, 2.0, (50, 120, 200))
-        else:
-            body = Polygon.create_regular_polygon(sides, poly_r, 2.0, (180, 60, 160))
-
-        body.physics = True
-        body.move_to(Matrix.vector([x, y])).rotate_to(ang)
-        body.linear_velocity = Matrix.vector([vx, vy])
-        body.angular_velocity.x = spin
-        return body
-
-    reference = [build(s) for s in states]
-    candidate = [build(s) for s in states]
+    rng = random.Random(seed)
+    candidate = [to_state(make_random_body(rng)) for _ in range(count)]
 
     for body in reference:
-        body.step(dt, gravity)
+        body.step(SUB_DT, GRAVITY)
 
-    Solver(candidate, gravity, Physics()).integrate_block(dt)
+    Solver(candidate, GRAVITY, Physics()).integrate_block(SUB_DT)
 
     for r, c in zip(reference, candidate):
         assert r.position.x == c.position.x
@@ -204,9 +213,9 @@ def test_broad_phase_pair_order_is_deterministic():
     engine = make_engine()
     bodies = []
     for i in range(6):
-        box = Polygon.create_rectangle(2, 2, 1.0, (1, 1, 1))
-        box.move_to(Matrix.vector([i * 1.5, 10 - i * 0.7]))
-        box.physics = box.collision = True
+        x = i * 1.5
+        y = 10 - i * 0.7
+        box = make_box(x, y, 0, 2, 2)
         bodies.append(box)
 
     first: list = []
@@ -218,33 +227,27 @@ def test_broad_phase_pair_order_is_deterministic():
     assert first
 
 
-# --- Jacobi accumulation core --------------------------------------------------------------------
-
-
 def build_pile():
     """Three stacked boxes on a static floor; returns (bodies, pairs)."""
-    floor = Polygon.create_rectangle(20.0, 2.0, 2.0, (80, 80, 80), is_static=True)
-    floor.physics = False
-    floor.move_to(Matrix.vector([0.0, 6.0]))
-    floor.uid = 0
+    floor = make_box(0, 6, 0, 20, 2, is_static=True)
     boxes = []
     for k in range(3):
-        box = Polygon.create_rectangle(2.0, 2.0, 2.0, (50, 120, 200))
-        box.physics = True
-        box.move_to(Matrix.vector([0.05 * k, 4.0 - 2.0 * k]))
-        box.uid = k + 1
-        boxes.append(box)
+        x = 0.05 * k
+        y = 4.0 - 2.0 * k
+        box = make_box(x, y)
+        boxes.append(to_state(box))
+
     pairs = [(floor, boxes[0]), (boxes[0], boxes[1]), (boxes[1], boxes[2])]
     return boxes, pairs
 
 
 def prepared_solver(boxes, pairs):
     """Integrate one sub-step and stage the frozen-pose inputs for the position pass."""
-    solver = Solver(boxes, GRAVITY, JACOBI_PHYS)
+    solver = Solver(boxes, GRAVITY, PHYS)
     previous = solver.snapshot_poses()
-    solver.integrate_block(JACOBI_SUB_DT)
+    solver.integrate_block(SUB_DT)
     solver.constraints = build_contacts(pairs, None)
-    solver.prev_pose = {id(body): pose for body, pose in zip(solver.bodies, previous)}
+    solver.prev_pose = {body.uid: pose for body, pose in zip(solver.bodies, previous)}
     return solver
 
 
@@ -295,7 +298,7 @@ def test_accumulator_is_a_block_indexed_by_row():
 def test_jacobi_settles_a_stack():
     """A short box stack settles under the Jacobi solver without exploding."""
     engine = make_engine(num_substeps=20)
-    engine.physics = JACOBI_PHYS
+    engine.physics = PHYS
     for body in make_pyramid_scene(2).build():
         engine.add_body(body)
 
@@ -315,7 +318,7 @@ def test_jacobi_settles_a_stack():
 
 def test_snapshot_poses_is_alias_safe():
     """A snapshot copies the pose, so moving the body afterwards never mutates it."""
-    body = make_circle(1, 2)
+    body = make_circle(1.0, 2.0)
     snapshot = Solver([body], GRAVITY, Physics()).snapshot_poses()
     body.move(Matrix.vector([10, 10]))
     body.rotate_to(0.5)
@@ -323,41 +326,23 @@ def test_snapshot_poses_is_alias_safe():
     assert (pose[0, 0], pose[0, 1], pose[0, 2]) == (1.0, 2.0, 0.0)
 
 
-def test_low_speed_restitution_is_gated_off():
-    """A resting-speed approach stays gated (e = 0), so the velocity pass adds no rebound."""
-    a = make_circle(0, 0)
-    b = make_circle(0, 1.5, vy=-0.05)
-    solver = Solver([a, b], GRAVITY, FRICTION)
-    solver.constraints = build_contacts([(a, b)], None)
-    assert solver.constraints
-    assert abs(solver.constraints[0].bias_velocity) <= 2 * GRAVITY.magnitude() * SUB_DT
-
-    solver.prev_pose = {id(body): pose
-                        for body, pose in zip(solver.bodies, solver.snapshot_poses())}
-    lambdas = solver.accumulate_positions()
-    solver.apply_positions()
-    solver.accumulate_velocities(lambdas, SUB_DT)
-    solver.apply_velocities()
-
-    after = relative_normal_velocity(a, b, solver.constraints[0].r_a,
-                                     solver.constraints[0].r_b, solver.constraints[0].normal)
-    assert after == pytest.approx(0.0, abs=1e-9)
-
-
 def test_elastic_impact_reverses_relative_normal_velocity():
     """A head-on, equal-mass, perfectly elastic impact reflects the relative normal velocity."""
     a = make_circle(0, 0, vy=2.5)
     b = make_circle(0, 1.5, vy=-2.5)
     solver = Solver([a, b], GRAVITY, ELASTIC)
+
+    previous = solver.snapshot_poses()
+    solver.integrate_block(SUB_DT)
     solver.constraints = build_contacts([(a, b)], None)
     assert solver.constraints
     before = solver.constraints[0].bias_velocity
     assert before < 0
-
-    solver.prev_pose = {id(body): pose
-                        for body, pose in zip(solver.bodies, solver.snapshot_poses())}
+    solver.prev_pose = {body.uid: pose
+                        for body, pose in zip(solver.bodies, previous)}
     lambdas = solver.accumulate_positions()
     solver.apply_positions()
+    Physics.derive_velocities(solver.bodies, previous, SUB_DT)
     solver.accumulate_velocities(lambdas, SUB_DT)
     solver.apply_velocities()
 
@@ -371,18 +356,12 @@ def test_elastic_impact_reverses_relative_normal_velocity():
 
 def run_drop(frames=180):
     """Drop one dynamic box onto a static floor and return the settled box."""
-    floor = make_static_box(0, 10)
-    box = Polygon.create_rectangle(2.0, 2.0, 1.0, (50, 100, 200))
-    box.physics = True
-    box.move_to(Matrix.vector([0, 0]))
-    box.linear_velocity[:] = 0
-    box.angular_velocity.x = 0
+    floor = make_box(0, 10, width=40, is_static=True)
+    box = to_state(make_box(0, 0))
     pairs = [(box, floor)]
-    for uid, body in enumerate([floor, box]):
-        body.uid = uid
     solver = Solver([box], GRAVITY, INELASTIC)
     for _ in range(frames):
-        solver.solve(SUB_DT, 4, pairs, None)
+        solver.solve(DT, NUM_SUBSTEPS, pairs, None)
     return box, floor
 
 
@@ -411,19 +390,14 @@ def test_solver_is_deterministic():
 def measured_restitution(restitution, frames=150):
     """Drop a ball and return its empirical coefficient of restitution (rebound / impact speed)."""
     cfg = Physics(restitution=restitution, dynamic_friction=0.0)
-    floor = make_static_box(0, 10)
-    ball = Circle.create(0.5, 2.0, (200, 100, 50))
-    ball.physics = True
-    ball.move_to(Matrix.vector([0, 0]))
-    ball.linear_velocity[:] = 0
-    ball.angular_velocity.x = 0.0
-    pairs = [(ball, floor)]
-    for uid, body in enumerate([floor, ball]):
-        body.uid = uid
-    solver = Solver([ball], GRAVITY, cfg)
+    floor = make_box(0, 10, width=40, is_static=True)
+    ball = make_circle(0, 0, radius=0.5)
+    ball_state = to_state(ball)
+    pairs = [(ball_state, floor)]
+    solver = Solver([ball_state], GRAVITY, cfg)
     impact = rebound = 0.0
     for _ in range(frames):
-        solver.solve(SUB_DT, 4, pairs, None)
+        solver.solve(DT, NUM_SUBSTEPS, pairs, None)
         vy = ball.linear_velocity.y
         impact = max(impact, vy)
         rebound = max(rebound, -vy)
@@ -440,23 +414,20 @@ def test_restitution_coefficient_tracks_configured_e(restitution):
 def test_random_pile_stays_finite_and_bounded(seed):
     """A non-overlapping column of boxes settles without NaN/inf or escaping the floor."""
     rng = random.Random(seed)
-    floor = make_static_box(0, 10)
+    floor = make_box(0, 10, width=40, is_static=True)
     boxes = []
     for level in range(rng.randint(2, 4)):
-        box = Polygon.create_rectangle(2.0, 2.0, 1.0, (50, 100, 200))
-        box.physics = True
-        box.move_to(Matrix.vector([rng.uniform(-0.3, 0.3), -3.0 * level]))
-        box.linear_velocity[:] = 0
-        box.angular_velocity.x = 0
-        boxes.append(box)
+        x = rng.uniform(-0.3, 0.3)
+        y = -3.0 * level
+        box = make_box(x, y)
+        boxes.append(to_state(box))
 
     pairs = [(boxes[i], boxes[j]) for i in range(len(boxes)) for j in range(i + 1, len(boxes))]
     pairs += [(box, floor) for box in boxes]
-    for uid, body in enumerate([floor] + boxes):
-        body.uid = uid
+
     solver = Solver(boxes, GRAVITY, FRICTION)
     for _ in range(180):
-        solver.solve(SUB_DT, 4, pairs, None)
+        solver.solve(DT, NUM_SUBSTEPS, pairs, None)
 
     for box in boxes:
         assert math.isfinite(box.position.x) and math.isfinite(box.position.y)

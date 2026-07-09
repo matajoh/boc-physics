@@ -83,11 +83,13 @@ class Physics(NamedTuple):
                           previous: list[tuple[Matrix, float]], h: float):
         """Set each body's velocity from its position delta over the sub-step (the XPBD velocity update)."""
         for body, prev in zip(bodies, previous):
-            Matrix.subtract(body.position, prev[0, :2], out=body.linear_velocity)
-            body.linear_velocity /= h
+            lv = body.linear_velocity
+            Matrix.subtract(body.position, prev[0, :2], out=lv)
+            lv /= h
 
-            Matrix.subtract(body.angle, prev[0, 2], out=body.angular_velocity)
-            body.angular_velocity /= h
+            av = body.angular_velocity
+            Matrix.subtract(body.angle, prev[0, 2], out=av)
+            av /= h
 
     def position_update(self, constraint: ContactConstraint,
                         previous: list[tuple[Matrix, float]]) -> tuple[ConstraintUpdate, float]:
@@ -102,8 +104,8 @@ class Physics(NamedTuple):
         count = 1
 
         if self.static_friction:
-            prev_a = previous.get(id(a))
-            prev_b = previous.get(id(b))
+            prev_a = previous.get(a.uid)
+            prev_b = previous.get(b.uid)
             count += self.add_static_friction(impulse, constraint, prev_a, prev_b, magnitude)
 
         return ConstraintUpdate.create(constraint, impulse, count), magnitude
@@ -145,7 +147,7 @@ class Physics(NamedTuple):
                 dvt = -min(h * self.dynamic_friction * f_n, vt_mag)
                 impulse = t * (dvt / w_t)
                 count += 1
-        e = 0.0 if abs(vn) <= 2 * g * h else self.restitution
+        e = 0.0 if abs(bias_velocity) <= 2 * g * h else self.restitution
         w_n = self.inv_mass(a, r_a, normal) + self.inv_mass(b, r_b, normal)
         if w_n > EPS:
             dvn = -vn + max(-e * bias_velocity, 0.0)

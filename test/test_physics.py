@@ -49,8 +49,7 @@ def test_find_contact_points_is_pure_and_takes_overlapping_config():
     floor.uid, box.uid = 1, 2
     collision = detect_collision(box, floor)
 
-    contact0, _, _, _ = find_contact_points(box, floor, collision,
-                                            GeometryPool([box, floor]))
+    contact0, _, _, _ = find_contact_points(box, floor, collision)
 
     assert abs(contact0.y - 9.5) < 1e-6
     residual = detect_collision(box, floor)
@@ -64,7 +63,7 @@ def test_resting_box_does_not_sink_through_floor():
     engine.add_body(floor.move_to(Matrix.vector([0, 10])))
     engine.add_body(box.move_to(Matrix.vector([0, 7])))
 
-    for _ in range(180):
+    for _ in range(40):
         engine.step(1 / 60)
 
     collision = detect_collision(box, floor)

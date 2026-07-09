@@ -2,7 +2,7 @@
 
 from bocpy import Matrix
 
-from .bodies import AABB, RigidBody
+from .bodies import AABB, RigidBody, RigidBodyState
 from .config import DetectionKind
 from .detection import Detection
 from .physics import Physics
@@ -43,6 +43,7 @@ class PhysicsEngine:
         self.detection = Detection(detection_kind, AABB(-self.width, -self.height,
                                                         self.width, self.height))
         self.bodies: list[RigidBody] = []
+        self.states: dict[int, RigidBodyState] = {}
         self.gravity = Matrix.vector([0, 9.81])
         self.collisions: list[tuple[RigidBody, RigidBody]] = []
         self.to_remove: list[RigidBody] = []
@@ -70,8 +71,9 @@ class PhysicsEngine:
 
         for body in self.to_remove:
             self.bodies.remove(body)
+            del self.states[body.uid]
 
-        self.solver = Solver(self.bodies, self.gravity, self.physics)
+        self.solver = None
 
     def broad_phase(self):
         """Performs the broad phase of collision detection.
@@ -97,7 +99,7 @@ class PhysicsEngine:
             body.swept_aabb = AABB(max(swept.left, world.left), max(swept.top, world.top),
                                    min(swept.right, world.right), min(swept.bottom, world.bottom))
 
-    def solve_substep(self, pairs: list[tuple[RigidBody, RigidBody]], sub_dt: float):
+    def solve_substep(self, dt: float, pairs: list[tuple[RigidBodyState, RigidBodyState]]):
         """Advance every dynamic body over the frame's sub-steps with the Jacobi XPBD solver.
 
         Description:
@@ -106,8 +108,11 @@ class PhysicsEngine:
             position pass, derives velocities from the position delta, then runs
             one velocity pass for friction and restitution.
         """
+        if self.solver is None:
+            self.solver = Solver(self.states.values(), self.gravity, self.physics)
+
         contacts = self.contacts if self.show_contacts else None
-        self.solver.solve(sub_dt, self.num_substeps, pairs, contacts)
+        self.solver.solve(dt, self.num_substeps, pairs, contacts)
 
     def step(self, dt: float):
         """Advances the simulation by a time step.
@@ -119,11 +124,16 @@ class PhysicsEngine:
         self.update_swept_aabbs(dt)
 
         self.collisions.clear()
-        self.broad_phase()
-        pairs = [(a, b) for a, b in self.collisions if a.physics or b.physics]
+        # need to update all aabbs (they will not be dirty)
+        for body in self.bodies:
+            if body.physics:
+                body.force_update()
 
-        sub_dt = dt / self.num_substeps
-        self.solve_substep(pairs, sub_dt)
+        self.broad_phase()
+        pairs = [(self.states[a.uid], self.states[b.uid])
+                 for a, b in self.collisions if a.physics or b.physics]
+
+        self.solve_substep(dt, pairs)
 
         self.remove_outside()
 
@@ -137,7 +147,8 @@ class PhysicsEngine:
         body.uid = self.next_uid
         self.next_uid += 1
         self.bodies.append(body)
-        self.solver = Solver(self.bodies, self.gravity, self.physics)
+        self.states[body.uid] = RigidBodyState(body.state)
+        self.solver = None
 
     def to_world(self, pos: Matrix) -> Matrix:
         """Converts a position from screen coordinates to world coordinates.

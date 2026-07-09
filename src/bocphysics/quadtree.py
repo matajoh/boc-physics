@@ -233,9 +233,11 @@ class QuadTree:
                                     intersections: list[tuple[RigidBody, RigidBody]]):
             num_values = len(node.values)
             for i in range(num_values):
+                a = node.values[i]
                 for j in range(0, i):
-                    if node.values[i].swept_aabb.intersects(node.values[j].swept_aabb):
-                        intersections.append((node.values[i], node.values[j]))
+                    b = node.values[j]
+                    if a.swept_aabb.intersects(b.swept_aabb):
+                        intersections.append((a, b))
 
             if node.is_leaf:
                 return

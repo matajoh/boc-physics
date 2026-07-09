@@ -5,8 +5,8 @@ from typing import NamedTuple, Optional
 from bocpy import Matrix
 
 
-from .bodies import Circle, Polygon, RigidBody
-from .collisions import batched_detect_collisions, Collision
+from .bodies import BodyKind, Circle, Polygon, RigidBody
+from .collisions import batched_detect_collisions, Collision, detect_collision
 from .geometry import broad_box, GeometryPool
 
 _BIG = 1e30
@@ -180,7 +180,63 @@ def are_different(a: Matrix, b: Matrix, tol: float) -> bool:
     return abs(a.x - b.x) > tol or abs(a.y - b.y) > tol
 
 
-def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, geom, tol=1e-5) -> tuple:
+def closest_edge_dist_vec(edges: Matrix, points: Matrix):
+    v0 = edges
+    v1 = Matrix.concat([edges[-1], edges[:-1]])
+    ab = v1 - v0
+    length2 = ab.magnitude_squared(axis=1)
+    pt = points.T
+    proj = ab @ pt
+    proj -= v0.vecdot(ab, axis=1)
+    t = (proj / length2)
+    t.clip(0, 1, in_place=True)
+    q2 = v0 @ pt
+    q2 *= -2
+    q2 += points.magnitude_squared(axis=1).T
+    q2 += v0.magnitude_squared(axis=1)
+    proj *= -2
+    q2.scaled_add(t, proj, in_place=True)
+    q2.scaled_add(t, t*length2, in_place=True)
+    return q2.min(axis=0).T
+
+
+def find_contact_points_polygon_polygon_vec(a: Polygon, b: Polygon, tol=1e-5) -> tuple:
+    a_verts = a.transformed_vertices
+    b_verts = b.transformed_vertices
+
+    ab = closest_edge_dist_vec(a_verts, b_verts)
+    ba = closest_edge_dist_vec(b_verts, a_verts)
+    dist = Matrix.concat([ab, ba])
+    col = Matrix.concat([b_verts, a_verts])
+
+    d_min = dist.min()
+    within = dist.less_equal(d_min + tol)
+
+    c0 = within.argmax()
+    p0 = col.row_view(c0)
+
+    dp = (col - p0).abs()
+    sep = dp.max(axis=1)
+
+    c1 = sep.argmax(where=within)
+    p1 = col.row_view(c1)
+    sepmax = sep[c1]
+
+    b_rows = b_verts.rows
+
+    def to_contact(c):
+        if c < b_rows:
+            return b.uid, c
+        else:
+            return a.uid, c - b_rows
+
+    if sepmax > tol:
+        return p0, p1, to_contact(c0), to_contact(c1)
+
+    return p0, None, to_contact(c0), None
+
+
+def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, tol=1e-5) -> tuple:
     """Find the contact points between two polygons, with feature IDs.
 
     Description:
@@ -190,8 +246,8 @@ def find_contact_points_polygon_polygon(a: Polygon, b: Polygon, geom, tol=1e-5) 
         the points, which stay byte-identical to the pre-ID scan. Vertices come
         from the shared GeometryPool, bit-identical to transformed_vertices.
     """
-    a_verts = geom.world_vertices(a.uid)
-    b_verts = geom.world_vertices(b.uid)
+    a_verts = a.transformed_vertices
+    b_verts = b.transformed_vertices
     state = [float("inf"), None, None, None, None]
     scan_polygon_edges(a_verts, b_verts, tol, state, b.uid)
     scan_polygon_edges(b_verts, a_verts, tol, state, a.uid)
@@ -210,8 +266,7 @@ def scan_polygon_edges(edges: Matrix, points: Matrix, tol: float, state: list,
 
 def find_contact_points(a: RigidBody,
                         b: RigidBody,
-                        collision: Collision,
-                        geom) -> tuple:
+                        collision: Collision) -> tuple[Matrix, Matrix, tuple[int, int], tuple[int, int]]:
     """Find the contact points for a collision from the overlapping configuration.
 
     Description:
@@ -222,14 +277,13 @@ def find_contact_points(a: RigidBody,
         Positional correction is the caller's responsibility -- call separate
         explicitly afterwards.
     """
-    if isinstance(a, Circle):
-        points = a.position + collision.normal * a.radius, None, (a.uid, 0), None
-    elif isinstance(b, Circle):
-        points = b.position - collision.normal * b.radius, None, (b.uid, 0), None
-    else:
-        points = find_contact_points_polygon_polygon(a, b, geom)
-
-    return points
+    match a.kind, b.kind:
+        case BodyKind.Circle, _:
+            return a.position + collision.normal * a.radius, None, (a.uid, 0), None
+        case _, BodyKind.Circle:
+            return b.position - collision.normal * b.radius, None, (b.uid, 0), None
+        case _:
+            return find_contact_points_polygon_polygon_vec(a, b)
 
 
 class ContactConstraint(NamedTuple):
@@ -278,6 +332,51 @@ def build_contacts(pairs: list[tuple[RigidBody, RigidBody]],
         constraint set is identical to running detect_collision on every pair.
     """
     constraints = []
+    for a, b in pairs:
+        if not a.physics and not b.physics:
+            continue
+
+        if not a.aabb.intersects(b.aabb):
+            continue
+
+        collision = detect_collision(a, b)
+        if collision is None:
+            continue
+
+        normal = collision.normal
+        c0, c1, _, _ = find_contact_points(a, b, collision)
+        ca = a.position
+        cb = b.position
+        points = [(c, c - ca, c - cb)
+                  for c in (c0, c1) if c is not None]
+        for c, r_a, r_b in points:
+            if contacts is not None:
+                contacts.add(tuple([c.x, c.y]))
+
+            bias_velocity = relative_normal_velocity(a, b, r_a, r_b, normal)
+            constraints.append(ContactConstraint(a, b, normal, r_a, r_b, collision.depth,
+                                                 bias_velocity))
+
+    return constraints
+
+
+def batched_build_contacts(pairs: list[tuple[RigidBody, RigidBody]],
+                           contacts: Optional[set[tuple[float, float]]]) -> list[ContactConstraint]:
+    """Re-evaluate the narrow phase at the current pose; one constraint per penetrating contact point.
+
+    Description:
+        Pairs where neither body is dynamic are skipped (a static-static contact
+        moves nothing and feeds a zero effective mass into the solve). Only
+        penetrating collisions (depth > 0) emit constraints, so every returned
+        constraint yields a position lambda the velocity pass can reuse. The
+        bias velocity is the raw pre-solve normal velocity; restitution is
+        applied later in solve_velocities, not folded in here. When contacts is
+        not None, the contact points are recorded for the show-contacts overlay.
+        Pairs whose AABBs are disjoint are rejected before the full SAT; the box
+        test is conservative (it never rejects a real overlap), so the emitted
+        constraint set is identical to running detect_collision on every pair.
+    """
+    constraints = []
     candidates = [(a, b) for a, b in pairs if a.physics or b.physics]
     unique = {id(p): p for a, b in candidates for p in (a, b)}
     boxes = {bid: broad_box(body) for bid, body in unique.items()}
@@ -310,7 +409,7 @@ def build_contacts(pairs: list[tuple[RigidBody, RigidBody]],
                 points.append((manifolds[k, o], manifolds[k, o + 1],
                                manifolds[k, o + 2:o + 4], manifolds[k, o + 4:o + 6]))
         else:
-            c0, c1, _, _ = find_contact_points(a, b, collision, geom)
+            c0, c1, _, _ = find_contact_points(a, b, collision)
             ca = a.position
             cb = b.position
             points = [(c.x, c.y, c - ca, c - cb)

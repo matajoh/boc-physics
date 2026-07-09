@@ -2,7 +2,7 @@
 
 from enum import IntEnum
 import math
-from typing import NamedTuple, Union
+from typing import NamedTuple, Optional, Union
 
 from bocpy import Cown, Matrix
 
@@ -13,6 +13,121 @@ Color = tuple[int, int, int]
 class BodyKind(IntEnum):
     Circle = 0
     Polygon = 1
+
+
+class RigidBodyState:
+    def __init__(self, state: tuple):
+        self.state = state
+        self.collision = True
+        if self.kind == BodyKind.Polygon:
+            self.transformed_vertices_ = self.vertices.copy()
+            self.transformed_normals_ = self.normals.copy()
+            self.physics = self.linear_velocity is not None
+        else:
+            self.physics = self.linear_velocity is not None
+
+        self.update_needed_ = True
+        self.update_transform()
+
+    def update_transform(self):
+        if not self.update_needed_:
+            return
+        
+        self.update_needed_ = False
+        if self.kind == BodyKind.Polygon:
+            cos_angle = self.angle.cos().x
+            sin_angle = self.angle.sin().x
+            rot_t = Matrix(2, 2, [cos_angle, sin_angle, -sin_angle, cos_angle])
+            Matrix.matmul(self.normals, rot_t, out=self.transformed_normals_)
+            Matrix.matmul(self.vertices, rot_t, out=self.transformed_vertices_)
+            self.transformed_vertices_ += self.position
+
+            low = self.transformed_vertices_.min(axis=0)
+            high = self.transformed_vertices_.max(axis=0)
+            self.aabb_ = AABB(low.x, low.y, high.x, high.y)
+        else:
+            x, y = self.position.x, self.position.y
+            r = self.radius
+            self.aabb_ = AABB(x - r, y - r, x + r, y + r)
+
+    def move(self, delta: Matrix):
+        p = self.position
+        p += delta
+        self.update_needed_ = True
+
+    def rotate(self, delta: Union[float, Matrix]):
+        a = self.angle
+        a += delta
+        self.update_needed_ = True
+
+    def step(self, dt: float, gravity: Matrix):
+        """Integrate the polygon's velocity and position over the time step."""
+        self.linear_velocity.scaled_add(dt, gravity, in_place=True)
+        self.position.scaled_add(dt, self.linear_velocity, in_place=True)
+        self.angle.scaled_add(dt, self.angular_velocity, in_place=True)
+        self.update_needed_ = True
+
+    @property
+    def aabb(self) -> AABB:
+        """Get the axis-aligned bounding box of the polygon."""
+        self.update_transform()
+        return self.aabb_
+
+    @property
+    def transformed_vertices(self) -> Matrix:
+        """Get the polygon's vertices in world space as an (N x 2) block."""
+        self.update_transform()
+        return self.transformed_vertices_
+
+    @property
+    def transformed_normals(self) -> Matrix:
+        """Get the polygon's edge normals in world space as an (N x 2) block."""
+        self.update_transform()
+        return self.transformed_normals_
+
+    @property
+    def uid(self) -> int:
+        return self.state[0]
+
+    @property
+    def kind(self) -> BodyKind:
+        return BodyKind(self.state[1])
+
+    @property
+    def position(self) -> Matrix:
+        return self.state[2]
+
+    @property
+    def angle(self) -> Matrix:
+        return self.state[3]
+
+    @property
+    def linear_velocity(self) -> Optional[Matrix]:
+        return self.state[4]
+
+    @property
+    def angular_velocity(self) -> Optional[Matrix]:
+        return self.state[5]
+
+    @property
+    def inv_mass(self) -> float:
+        return self.state[6]
+
+    @property
+    def inv_inertia(self) -> float:
+        return self.state[7]
+
+    @property
+    def vertices(self) -> Matrix:
+        return self.state[8]
+
+    @property
+    def radius(self) -> float:
+        return self.state[8]
+
+    @property
+    def normals(self) -> Matrix:
+        return self.state[9]
 
 
 class AABB(NamedTuple("AABB", [("left", float), ("top", float), ("right", float), ("bottom", float)])):
@@ -107,11 +222,24 @@ class Circle:
         self.swept_aabb = self.aabb_
         self.update_needed_ = True
 
+    @property
+    def state(self) -> tuple:
+        if self.physics:
+            linear_velocity, angular_velocity = self.linear_velocity, self.angular_velocity
+        else:
+            linear_velocity, angular_velocity = None, None
+
+        return (self.uid, int(self.kind), self.position, self.angle,
+                linear_velocity, angular_velocity,
+                self.inv_mass, self.inv_inertia,
+                self.radius, None)
+
+    def force_update(self):
+        self.update_needed_ = True
+
     def share(self):
         """Prepare this circle to be shared across behaviors."""
-        self.cown = Cown((int(self.kind), self.position, self.angle,
-                          self.linear_velocity, self.angular_velocity,
-                          self.radius, self.inv_mass, self.inv_inertia))
+        self.cown = Cown(self.state)
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the circle's velocity and position over the time step."""
@@ -151,6 +279,15 @@ class Circle:
                 "radius": self.radius,
                 "color": self.color}
 
+    def update_transform(self):
+        if not self.update_needed_:
+            return
+
+        self.update_needed_ = False
+        self.aabb_ = AABB(self.position.x - self.radius, self.position.y - self.radius,
+                          self.position.x + self.radius, self.position.y + self.radius)
+        self.update_needed_ = False
+
     @property
     def aabb(self) -> AABB:
         """Get the axis-aligned bounding box of the circle.
@@ -158,11 +295,7 @@ class Circle:
         Description:
             Note how the bounding box is only updated when necessary.
         """
-        if self.update_needed_:
-            self.aabb_ = AABB(self.position.x - self.radius, self.position.y - self.radius,
-                              self.position.x + self.radius, self.position.y + self.radius)
-            self.update_needed_ = False
-
+        self.update_transform()
         return self.aabb_
 
     @staticmethod
@@ -226,11 +359,23 @@ class Polygon:
         self.transformed_normals_ = self.normals.copy()
         self.update_needed_ = True
 
+    @property
+    def state(self) -> tuple:
+        if self.physics:
+            linear_velocity, angular_velocity = self.linear_velocity, self.angular_velocity
+        else:
+            linear_velocity, angular_velocity = None, None
+
+        return (self.uid, int(self.kind), self.position, self.angle,
+                linear_velocity, angular_velocity,
+                self.inv_mass, self.inv_inertia,
+                self.vertices, self.normals)
+
+    def force_update(self):
+        self.update_needed_ = True
+
     def share(self):
-        self.cown = Cown((int(self.kind), self.position, self.angle,
-                          self.linear_velocity, self.angular_velocity,
-                          self.vertices, self.normals,
-                          self.inv_mass, self.inv_inertia))
+        self.cown = Cown(self.state)
 
     def step(self, dt: float, gravity: Matrix):
         """Integrate the polygon's velocity and position over the time step."""

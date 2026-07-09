@@ -10,7 +10,7 @@ from typing import Optional
 
 from bocpy import Matrix
 
-from .bodies import RigidBody
+from .bodies import RigidBody, RigidBodyState
 from .contacts import build_contacts, ContactConstraint
 from .physics import Physics
 
@@ -26,8 +26,8 @@ ContactSet = set[tuple[float, float]]
 class Solver:
     """Batched Jacobi XPBD sub-step solver over one group of bodies."""
 
-    def __init__(self, bodies: list[RigidBody], gravity: Matrix, physics: Physics):
-        """Create a solver over the group's dynamic bodies with shared gravity and physics config."""
+    def __init__(self, bodies: list[RigidBodyState], gravity: Matrix, physics: Physics):
+        """Create a solver over the group's dynamic bodies with shared gravity and physics config."""        
         self.bodies = [body for body in bodies if body.physics]
         if len(bodies) == 0:
             self.pos_acc = None
@@ -36,7 +36,7 @@ class Solver:
             self.pos_acc = Matrix.zeros((len(bodies), ACC_WIDTH))
             self.vel_acc = Matrix.zeros((len(bodies), ACC_WIDTH))
 
-        self.row_of = {id(body): i for i, body in enumerate(self.bodies)}
+        self.row_of = {body.uid: i for i, body in enumerate(self.bodies)}
         self.pairs: list[Pair] = None
         self.constraints: list[ContactConstraint] = None
         self.prev_pose: dict[int, Matrix] = None
@@ -51,7 +51,7 @@ class Solver:
         rn = r.cross(direction)
         return body.inv_mass + rn * rn * body.inv_inertia
 
-    def solve(self, sub_dt: float, num_substeps: int,
+    def solve(self, dt: float, num_substeps: int,
               pairs: list[tuple[RigidBody, RigidBody]],
               contacts: Optional[ContactSet]):
         """Advance one group of bodies over all sub-steps with the Jacobi solver."""
@@ -60,6 +60,7 @@ class Solver:
 
         self.pairs = pairs
         self.contacts = contacts
+        sub_dt = dt / num_substeps
         for _ in range(num_substeps):
             self.solve_substep(sub_dt)
 
@@ -68,7 +69,7 @@ class Solver:
         previous = self.snapshot_poses()
         self.integrate_block(sub_dt)
         self.constraints = build_contacts(self.pairs, self.contacts)
-        self.prev_pose = {id(body): pose for body, pose in zip(self.bodies, previous)}
+        self.prev_pose = {body.uid: pose for body, pose in zip(self.bodies, previous)}
         lambdas = self.accumulate_positions()
         self.apply_positions()
         Physics.derive_velocities(self.bodies, previous, sub_dt)
@@ -78,7 +79,7 @@ class Solver:
     def apply_positions(self):
         """Apply each owned body's averaged position correction from its accumulator row."""
         for body in self.bodies:
-            row = self.row_of.get(id(body))
+            row = self.row_of.get(body.uid)
             if row is None:
                 continue
 
@@ -88,6 +89,7 @@ class Solver:
 
             body.move(self.pos_acc[row, :2] / count)
             body.rotate(self.pos_acc[row, 2] / count)
+            body.update_transform()
 
     def accumulate_positions(self) -> list[float]:
         """Accumulate every contact's normal + static-friction position correction, frozen-pose.
@@ -121,7 +123,7 @@ class Solver:
         """
         if not body.physics:
             return
-        row = self.row_of.get(id(body))
+        row = self.row_of.get(body.uid)
         if row is None:
             return
 
@@ -165,6 +167,11 @@ class Solver:
         if n == 0:
             return
 
+        for body in self.bodies:
+            body.step(dt, self.gravity)
+
+        """
+        # TODO revisit this
         velocity = Matrix.concat([b.linear_velocity for b in self.bodies])
         position = Matrix.concat([b.position for b in self.bodies])
         angle = Matrix.concat([b.angle for b in self.bodies])
@@ -178,17 +185,20 @@ class Solver:
             body.linear_velocity[:] = velocity[i]
             body.position[:] = position[i]
             body.angle.x = angle[i]
-            body.update_needed_ = True
+            body.update_transform()
+        """
 
     def apply_velocities(self):
         """Apply each owned body's averaged velocity impulse from its accumulator row."""
         for body in self.bodies:
-            row = self.row_of.get(id(body))
+            row = self.row_of.get(body.uid)
             if row is None:
                 continue
             count = self.vel_acc[row, 3]
             if count == 0.0:
                 continue
             dlin = self.vel_acc[row, :2]
-            body.linear_velocity += dlin * (1.0 / count)
-            body.angular_velocity += self.vel_acc[row, 2] / count
+            lv = body.linear_velocity
+            lv += dlin / count
+            av = body.angular_velocity
+            av += self.vel_acc[row, 2] / count

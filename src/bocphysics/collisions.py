@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 from bocpy import Matrix
 
-from .bodies import Circle, Polygon, RigidBody
+from .bodies import BodyKind, Circle, Polygon, RigidBody
 from .geometry import GeometryPool
 
 BIG = 1.0e30           # sentinel depth for masked padding axes
@@ -87,17 +87,13 @@ def intersect_polygon_polygon(a: Polygon, b: Polygon) -> Collision:
 
 def detect_collision(a: RigidBody, b: RigidBody) -> Collision:
     """Dispatch to the right narrow-phase test for the body pair."""
-    if isinstance(a, Circle):
-        if isinstance(b, Circle):
-            return intersect_circle_circle(a, b)
-
-        return intersect_circle_polygon(a, b)
-    elif isinstance(a, Polygon):
-        if isinstance(b, Circle):
+    match a.kind, b.kind:
+        case BodyKind.Circle, BodyKind.Circle: return intersect_circle_circle(a, b)
+        case BodyKind.Circle, BodyKind.Polygon: return intersect_circle_polygon(a, b)
+        case BodyKind.Polygon, BodyKind.Circle:
             collision = intersect_circle_polygon(b, a)
             return collision.reverse() if collision else None
-
-        return intersect_polygon_polygon(a, b)
+        case BodyKind.Polygon, BodyKind.Polygon: return intersect_polygon_polygon(a, b)
 
 
 def batched_circle_circle(pairs: list[tuple[RigidBody, RigidBody]]):

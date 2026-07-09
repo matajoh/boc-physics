@@ -70,7 +70,8 @@ def draw_body(body, batch, project: Camera, fill_group, line_group, grayscale=Fa
     if isinstance(body, Circle):
         x, y = project(body.position)
         radius = body.radius * project.scale
-        p = Matrix.vector([math.cos(body.angle), math.sin(body.angle)]) * radius * 0.9
+        angle = body.angle.x
+        p = Matrix.vector([math.cos(angle), math.sin(angle)]) * radius * 0.9
         fill = shapes.Circle(x, y, radius, color=color, batch=batch, group=fill_group)
         if not body.physics:
             outline = shapes.Arc(x, y, radius, closed=True, thickness=4, color=BLACK, batch=batch, group=line_group)

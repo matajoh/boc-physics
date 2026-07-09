@@ -349,7 +349,7 @@ the outward velocity that push implies, for free, with no impulse formula.
 alone cannot capture — **restitution** and **friction**:
 
 ```python
-e = 0.0 if abs(vn) <= 2 * g * h else physics.restitution
+e = 0.0 if abs(bias_velocity) <= 2 * g * h else physics.restitution
 dvn = -vn + max(-e * bias_velocity, 0.0)        # cancel approach, add bounce
 ```
 
